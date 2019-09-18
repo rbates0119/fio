@@ -373,6 +373,7 @@ static int init_zone_info(struct thread_data *td, struct fio_file *f)
 		p->wp = p->start + zone_size;
 		p->type = BLK_ZONE_TYPE_SEQWRITE_REQ;
 		p->cond = BLK_ZONE_COND_EMPTY;
+		p->finish_zone = 0;
 	}
 	/* a sentinel */
 	p->start = nr_zones * zone_size;
@@ -945,9 +946,25 @@ static void zbd_close_zone(struct thread_data *td, const struct fio_file *f,
 			   unsigned int open_zone_idx)
 {
 	uint32_t zone_idx;
+	struct blk_zone_range zr;
+	struct fio_zone_info *z;
+	int ret;
 
 	assert(open_zone_idx < f->zbd_info->num_open_zones);
 	zone_idx = f->zbd_info->open_zones[open_zone_idx];
+	if (td->o.max_open_zones && td->o.issue_zone_finish) {
+		z = &f->zbd_info->zone_info[zone_idx];
+		if (z->finish_zone ) {
+			zr.sector = z->start >> 9;
+			zr.nr_sectors =  f->zbd_info->zone_size >> 9;
+			ret = ioctl(f->fd, BLKFINISHZONE, &zr);
+			if (ret < 0)
+				td_verror(td, errno, "issuing finish failed");
+			z->finish_zone = 0;
+		}else
+			return;
+	}
+
 	memmove(f->zbd_info->open_zones + open_zone_idx,
 		f->zbd_info->open_zones + open_zone_idx + 1,
 		(FIO_MAX_OPEN_ZBD_ZONES - (open_zone_idx + 1)) *
@@ -1230,6 +1247,9 @@ static void zbd_put_io(const struct io_u *io_u)
 
 	if (z->type != BLK_ZONE_TYPE_SEQWRITE_REQ)
 		return;
+
+	if ( z->start + z->capacity == io_u->offset + io_u->buflen && z->open && !z->finish_zone)
+		z->finish_zone = 1;
 
 	dprint(FD_ZBD,
 	       "%s: terminate I/O (%lld, %llu) for zone %u\n",

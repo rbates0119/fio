@@ -3394,6 +3394,17 @@ struct fio_option fio_options[FIO_MAX_OPTS] = {
 		.group	= FIO_OPT_G_ZONE,
 	},
 	{
+		.name	= "issue_zone_finish",
+		.lname	= "Issue finish",
+		.type	= FIO_OPT_BOOL,
+		.maxlen	= 1,
+		.off1	= offsetof(struct thread_options, issue_zone_finish),
+		.help	= "Issue finish when the zone is full",
+		.def	= "0",
+		.category = FIO_OPT_C_IO,
+		.group	= FIO_OPT_G_ZONE,
+	},
+	{
 		.name	= "lockmem",
 		.lname	= "Lock memory",
 		.type	= FIO_OPT_STR_VAL,
