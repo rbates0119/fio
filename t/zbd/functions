@@ -17,11 +17,11 @@ first_sequential_zone() {
 
     if [ -n "${blkzone}" ]; then
 	${blkzone} report "$dev" |
-	    sed -n 's/^[[:blank:]]*start:[[:blank:]]\([0-9a-zA-Z]*\),[[:blank:]]len[[:blank:]]\([0-9a-zA-Z]*\),.*type:[[:blank:]]2(.*/\1 \2/p' |
+	    sed -n 's/^[[:blank:]]*start:[[:blank:]]\([0-9a-zA-Z]*\),[[:blank:]]len[[:blank:]]\([0-9a-zA-Z]*\),[[:blank:]]capacity:[[:blank:]]\([0-9a-zA-Z]*\),.*type:[[:blank:]]2(.*/\1 \2 \3/p' |
 	    {
-		read -r starting_sector length &&
+		read -r starting_sector length capacity &&
 		    # Convert from hex to decimal
-		    echo $((starting_sector)) $((length))
+		    echo $((starting_sector)) $((length)) $((capacity))
 	    }
     else
 	${zbc_report_zones} "$dev" |
