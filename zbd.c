@@ -55,7 +55,7 @@ static bool zbd_zone_full(const struct fio_file *f, struct fio_zone_info *z,
 	assert((required & 511) == 0);
 
 	return z->type == BLK_ZONE_TYPE_SEQWRITE_REQ &&
-		z->wp + required > z->start + f->zbd_info->zone_size;
+		z->wp + required > z->start + z->capacity;
 }
 
 static bool is_valid_offset(const struct fio_file *f, uint64_t offset)
@@ -460,10 +460,14 @@ static int parse_zone_info(struct thread_data *td, struct fio_file *f)
 		for (i = 0; i < hdr->nr_zones; i++, j++, z++, p++) {
 			pthread_mutex_init(&p->mutex, &attr);
 			p->start = z->start << 9;
+			p->capacity = z->capacity << 9;
 			switch (z->cond) {
 			case BLK_ZONE_COND_NOT_WP:
 			case BLK_ZONE_COND_FULL:
-				p->wp = p->start + zone_size;
+				if (z->type == BLK_ZONE_TYPE_SEQWRITE_REQ)
+					p->wp = p->start + (z->capacity << 9);
+				else
+					p->wp = p->start + zone_size;
 				break;
 			default:
 				assert(z->start <= z->wp);
@@ -1019,7 +1023,7 @@ static struct fio_zone_info *zbd_convert_to_open_zone(struct thread_data *td,
 	/* Both z->mutex and f->zbd_info->mutex are held. */
 
 examine_zone:
-	if (z->wp + min_bs <= (z+1)->start) {
+	if (z->wp + min_bs <= z->start + z->capacity) {
 		pthread_mutex_unlock(&f->zbd_info->mutex);
 		goto out;
 	}
@@ -1061,7 +1065,7 @@ examine_zone:
 		z = &f->zbd_info->zone_info[zone_idx];
 
 		pthread_mutex_lock(&z->mutex);
-		if (z->wp + min_bs <= (z+1)->start)
+		if (z->wp + min_bs <= z->start + z->capacity)
 			goto out;
 		pthread_mutex_lock(&f->zbd_info->mutex);
 	}
@@ -1092,7 +1096,7 @@ static struct fio_zone_info *zbd_replay_write_order(struct thread_data *td,
 		assert(z);
 	}
 
-	if (z->verify_block * min_bs >= f->zbd_info->zone_size)
+	if (z->verify_block * min_bs > z->capacity)
 		log_err("%s: %d * %d >= %llu\n", f->file_name, z->verify_block,
 			min_bs, (unsigned long long) f->zbd_info->zone_size);
 	io_u->offset = z->start + z->verify_block++ * min_bs;
@@ -1180,7 +1184,7 @@ static void zbd_queue_io(struct io_u *io_u, int q, bool success)
 	switch (io_u->ddir) {
 	case DDIR_WRITE:
 		zone_end = min((uint64_t)(io_u->offset + io_u->buflen),
-			       (z + 1)->start);
+			       (z->start + z->capacity));
 		pthread_mutex_lock(&zbd_info->mutex);
 		/*
 		 * z->wp > zone_end means that one or more I/O errors
@@ -1341,8 +1345,10 @@ enum io_u_action zbd_adjust_block(struct thread_data *td, struct io_u *io_u)
 	 * is enabled.
 	 */
 	if (zb->cond != BLK_ZONE_COND_OFFLINE &&
-	    io_u->ddir == DDIR_READ && td->o.read_beyond_wp)
-		return io_u_accept;
+	    io_u->ddir == DDIR_READ && td->o.read_beyond_wp) {
+		if (io_u->offset + io_u->buflen <= zb->start + zb->capacity)
+			return io_u_accept;
+	}
 
 	zbd_check_swd(f);
 
@@ -1439,6 +1445,22 @@ enum io_u_action zbd_adjust_block(struct thread_data *td, struct io_u *io_u)
 				zb->reset_zone = 1;
 			}
 		}
+
+		if (!td_random(td) && f->zbd_info->zone_size > zb->capacity) {
+                        /*
+                         * Seq write on a dev with zone capacity < zone size,
+                         * when wp is at zone capacity, explicitly go to
+                         * next available zone to contiue seq write
+                         */
+			if (zbd_zone_full(f, zb, min_bs)) {
+				pthread_mutex_unlock(&zb->mutex);
+				zb = zbd_convert_to_open_zone(td, io_u);
+				if (!zb)
+					goto eof;
+                        }
+
+                }
+
 		/* Reset the zone pointer if necessary */
 		if (zb->reset_zone || zbd_zone_full(f, zb, min_bs)) {
 			assert(td->o.verify == VERIFY_NONE);
@@ -1468,7 +1490,7 @@ enum io_u_action zbd_adjust_block(struct thread_data *td, struct io_u *io_u)
 		 * small.
 		 */
 		new_len = min((unsigned long long)io_u->buflen,
-			      (zb + 1)->start - io_u->offset);
+			      ((zb->start + zb->capacity) - io_u->offset));
 		new_len = new_len / min_bs * min_bs;
 		if (new_len == io_u->buflen)
 			goto accept;
