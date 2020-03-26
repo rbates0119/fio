@@ -3405,6 +3405,17 @@ struct fio_option fio_options[FIO_MAX_OPTS] = {
 		.group	= FIO_OPT_G_ZONE,
 	},
 	{
+		.name	= "ns_id",
+		.lname	= "Namespace id",
+		.type	= FIO_OPT_INT,
+		.maxlen	= 1,
+		.off1	= offsetof(struct thread_options, ns_id),
+		.help	= "Namespace id to issue nvme commands",
+		.def	= "1",
+		.category = FIO_OPT_C_IO,
+		.group	= FIO_OPT_G_ZONE,
+	},
+	{
 		.name	= "lockmem",
 		.lname	= "Lock memory",
 		.type	= FIO_OPT_STR_VAL,

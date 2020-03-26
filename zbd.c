@@ -13,6 +13,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include <linux/blkzoned.h>
+#include <linux/nvme_ioctl.h>
 
 #include "file.h"
 #include "fio.h"
@@ -898,6 +899,39 @@ static bool is_zone_open(const struct thread_data *td, const struct fio_file *f,
 
 	return false;
 }
+#define	NVME_ZONE_MGMT_SEND_ZRWAA	9
+#define NVME_ZONE_ACTION_OPEN       0x3
+static bool zbd_issue_exp_open_zrwa(const struct fio_file *f, uint32_t zone_idx,
+									uint32_t nsid)
+{
+	int ret;
+	uint32_t cdw13 = 0;
+	uint32_t zrwaa = 1;
+	struct fio_zone_info *z = &f->zbd_info->zone_info[zone_idx];
+	uint64_t slba = z->start;
+	struct nvme_passthru_cmd cmd;
+	memset(&cmd, 0, sizeof(cmd));
+
+	cdw13 = NVME_ZONE_ACTION_OPEN; //Open zone explicitly
+	cdw13 |= zrwaa << NVME_ZONE_MGMT_SEND_ZRWAA; //Set this bit to indicate alloc zrwa
+
+	cmd.opcode     = 0x79;				//nvme_cmd_zone_mgmt_send
+	cmd.nsid       = nsid;
+	cmd.cdw10      = slba & 0xffffffff;
+	cmd.cdw11      = slba >> 32;
+	cmd.cdw13      = cdw13;
+	cmd.addr       = (__u64)(uintptr_t)NULL;
+	cmd.data_len   = 0;
+
+	printf("Issuing Exp-Open to zone %d, slba %ld, nsid %d\n", zone_idx,
+						slba, nsid);
+	ret = ioctl(f->fd, NVME_IOCTL_IO_CMD, &cmd);
+	if (ret < 0) {
+		perror("ioctl returned:");
+		return false;
+	}
+	return true;
+}
 
 /*
  * Open a ZBD zone if it was not yet open. Returns true if either the zone was
@@ -935,6 +969,9 @@ static bool zbd_open_zone(struct thread_data *td, const struct io_u *io_u,
 		goto out;
 	dprint(FD_ZBD, "%s: opening zone %d\n", f->file_name, zone_idx);
 	f->zbd_info->open_zones[f->zbd_info->num_open_zones++] = zone_idx;
+	// Issue an explicit open with ZRWAA bit set via io-passtrhu.
+	if(!zbd_issue_exp_open_zrwa(f, zone_idx, td->o.ns_id))
+		goto out;
 	z->open = 1;
 	res = true;
 

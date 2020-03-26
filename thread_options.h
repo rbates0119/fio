@@ -343,6 +343,7 @@ struct thread_options {
 	unsigned int read_beyond_wp;
 	int max_open_zones;
 	bool issue_zone_finish;
+	uint32_t ns_id;
 	fio_fp64_t zrt;
 	fio_fp64_t zrf;
 };
