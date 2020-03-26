@@ -611,7 +611,8 @@ static int zbd_init_zone_info(struct thread_data *td, struct fio_file *file)
 int zbd_init(struct thread_data *td)
 {
 	struct fio_file *f;
-	int i;
+	int i, start_z_idx, nr_zones;
+	unsigned long long total_ow, ow_per_zone;
 
 	for_each_file(td, f, i) {
 		if (f->filetype != FIO_TYPE_BLOCK)
@@ -634,7 +635,17 @@ int zbd_init(struct thread_data *td)
 
 	if (!zbd_verify_bs())
 		return 1;
-
+	if (td->o.zrwa_overwrite_percent) {
+	    ow_per_zone = (f->zbd_info->zone_size * td->o.zrwa_overwrite_percent) / 100;
+	    start_z_idx = zbd_zone_idx(f, f->file_offset);
+	    nr_zones = zbd_zone_idx(f, f->file_offset + f->io_size) - start_z_idx;
+	    total_ow = nr_zones * ow_per_zone;
+	    dprint(FD_ZBD, "zbd_init: Overwrites per zone = %lld, total ow = %lld, nr_zones = %d \n",
+										ow_per_zone, total_ow, nr_zones);
+	    td->o.io_size += total_ow;
+	    f->zbd_info->ow_count = ow_per_zone / td->o.bs[0];
+	    dprint(FD_ZBD,"zbd_init: new io_size with overwrites = %lld, ow-count-in-blks-per-zone = %d \n",td->o.io_size, f->zbd_info->ow_count);
+	}
 
 	return 0;
 }
@@ -938,7 +949,7 @@ static bool zbd_issue_commit_zone(const struct fio_file *f, uint32_t zone_idx, u
 	cmd.addr       = (__u64)(uintptr_t)&llba;
 	cmd.data_len   = sizeof(uint64_t);
 
-	printf("Issuing commit_zone to zone %d, slba %lu, nsid %d, llba = %lu\n", zone_idx,
+	dprint(FD_ZBD, "Issuing commit_zone to zone %d, slba %lu, nsid %d, llba = %lu\n", zone_idx,
 						slba, g_nsid, llba);
 	ret = ioctl(f->fd, NVME_IOCTL_IO_CMD, &cmd);
 	if (ret < 0) {
@@ -970,7 +981,7 @@ static bool zbd_issue_exp_open_zrwa(const struct fio_file *f, uint32_t zone_idx,
 	cmd.addr       = (__u64)(uintptr_t)NULL;
 	cmd.data_len   = 0;
 
-	printf("Issuing Exp-Open to zone %d, slba %ld, nsid %d\n", zone_idx,
+	dprint(FD_ZBD, "Issuing Exp-Open to zone %d, slba %ld, nsid %d\n", zone_idx,
 						slba, nsid);
 	ret = ioctl(f->fd, NVME_IOCTL_IO_CMD, &cmd);
 	if (ret < 0) {
@@ -1352,14 +1363,14 @@ static void zbd_put_io(const struct io_u *io_u)
 		    if ((io_u->offset + io_u->buflen) >= g_commit_gran &&
 			    !((io_u->offset + io_u->buflen) % g_commit_gran)) {
 		    if(!zbd_issue_commit_zone(f, zone_idx, io_u->offset + io_u->buflen))
-			    printf("commit zone failed on zone %d, at offset %llu\n",
+			    dprint(FD_ZBD, "commit zone failed on zone %d, at offset %llu\n",
 							    zone_idx, io_u->offset + io_u->buflen);
 		    }
 	    } else {
 		    //In case io_u->buflen >= g_commit_gran
 		    for (i = 1; i <= io_u->buflen / g_commit_gran; i++) {
 			    if(!zbd_issue_commit_zone(f, zone_idx, (io_u->offset + io_u->buflen * i)))
-				    printf("commit zone failed on zone %d, at offset %llu\n",
+				    dprint(FD_ZBD, "commit zone failed on zone %d, at offset %llu\n",
 					    zone_idx, io_u->offset + io_u->buflen);
 		    }
 	    }
@@ -1456,6 +1467,8 @@ enum io_u_action zbd_adjust_block(struct thread_data *td, struct io_u *io_u)
 	uint32_t min_bs = td->o.min_bs[io_u->ddir];
 	uint64_t new_len;
 	int64_t range;
+
+	srand(time(NULL));
 
 	if (!f->zbd_info)
 		return io_u_accept;
@@ -1609,6 +1622,17 @@ enum io_u_action zbd_adjust_block(struct thread_data *td, struct io_u *io_u)
 		/* Make writes occur at the write pointer */
 		assert(!zbd_zone_full(f, zb, min_bs));
 		io_u->offset = zb->wp;
+
+		// If overwrites are set, then issue a write to previously written
+		// location, which is wp - buflen, ensure the offset is greater
+		// zone start, so that the IO are not sent to previous zone.
+		if (td->o.zrwa_overwrite_percent) {
+		    if (!(rand() % 5) && f->zbd_info->ow_count &&
+				    (io_u->offset + io_u->buflen > zb->start)) {
+			    io_u->offset -= io_u->buflen;
+			    f->zbd_info->ow_count--;
+		    }
+		}
 		if (!is_valid_offset(f, io_u->offset)) {
 			dprint(FD_ZBD, "Dropped request with offset %llu\n",
 			       io_u->offset);
