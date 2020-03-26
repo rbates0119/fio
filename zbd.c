@@ -23,6 +23,7 @@
 #include "verify.h"
 #include "zbd.h"
 
+static int g_finish_zone;
 /**
  * zbd_zone_idx - convert an offset into a zone number
  * @f: file pointer.
@@ -506,6 +507,7 @@ static int parse_zone_info(struct thread_data *td, struct fio_file *f)
 	f->zbd_info->nr_zones = nr_zones;
 	zbd_info = NULL;
 	ret = 0;
+	g_finish_zone = td->o.issue_zone_finish;
 
 close:
 	sfree(zbd_info);
@@ -946,22 +948,15 @@ static void zbd_close_zone(struct thread_data *td, const struct fio_file *f,
 			   unsigned int open_zone_idx)
 {
 	uint32_t zone_idx;
-	struct blk_zone_range zr;
 	struct fio_zone_info *z;
-	int ret;
 
 	assert(open_zone_idx < f->zbd_info->num_open_zones);
 	zone_idx = f->zbd_info->open_zones[open_zone_idx];
 	if (td->o.max_open_zones && td->o.issue_zone_finish) {
 		z = &f->zbd_info->zone_info[zone_idx];
-		if (z->finish_zone ) {
-			zr.sector = z->start >> 9;
-			zr.nr_sectors =  f->zbd_info->zone_size >> 9;
-			ret = ioctl(f->fd, BLKFINISHZONE, &zr);
-			if (ret < 0)
-				td_verror(td, errno, "issuing finish failed");
+		if (z->finish_zone) {
 			z->finish_zone = 0;
-		}else
+		} else
 			return;
 	}
 
@@ -997,9 +992,9 @@ static struct fio_zone_info *zbd_convert_to_open_zone(struct thread_data *td,
 		 * This statement accesses f->zbd_info->open_zones[] on purpose
 		 * without locking.
 		 */
-		zone_idx = f->zbd_info->open_zones[(io_u->offset -
+		zone_idx = f->zbd_info->open_zones[((io_u->offset -
 						    f->file_offset) *
-				f->zbd_info->num_open_zones / f->io_size];
+				f->zbd_info->num_open_zones) / (f->io_size)];
 	} else {
 		zone_idx = zbd_zone_idx(f, io_u->offset);
 	}
@@ -1026,8 +1021,8 @@ static struct fio_zone_info *zbd_convert_to_open_zone(struct thread_data *td,
 			       __func__, f->file_name);
 			return NULL;
 		}
-		open_zone_idx = (io_u->offset - f->file_offset) *
-			f->zbd_info->num_open_zones / f->io_size;
+		open_zone_idx = ((io_u->offset - f->file_offset) *
+			f->zbd_info->num_open_zones) / (f->io_size);
 		assert(open_zone_idx < f->zbd_info->num_open_zones);
 		new_zone_idx = f->zbd_info->open_zones[open_zone_idx];
 		if (new_zone_idx == zone_idx)
@@ -1237,6 +1232,8 @@ static void zbd_put_io(const struct io_u *io_u)
 	struct zoned_block_device_info *zbd_info = f->zbd_info;
 	struct fio_zone_info *z;
 	uint32_t zone_idx;
+	struct blk_zone_range zr;
+	int ret;
 
 	if (!zbd_info)
 		return;
@@ -1248,8 +1245,14 @@ static void zbd_put_io(const struct io_u *io_u)
 	if (z->type != BLK_ZONE_TYPE_SEQWRITE_REQ)
 		return;
 
-	if ( z->start + z->capacity == io_u->offset + io_u->buflen && z->open && !z->finish_zone)
+	if ((z->start + z->capacity == io_u->offset + io_u->buflen) && g_finish_zone) {
 		z->finish_zone = 1;
+		zr.sector = z->start >> 9;
+		zr.nr_sectors =  f->zbd_info->zone_size >> 9;
+		ret = ioctl(f->fd, BLKFINISHZONE, &zr);
+		if (ret < 0)
+			perror("issuing finish failed");
+	}
 
 	dprint(FD_ZBD,
 	       "%s: terminate I/O (%lld, %llu) for zone %u\n",
