@@ -345,6 +345,7 @@ struct thread_options {
 	bool issue_zone_finish;
 	uint32_t ns_id;
 	uint32_t commit_gran;
+	uint32_t exp_commit;
 	fio_fp64_t zrt;
 	fio_fp64_t zrf;
 };

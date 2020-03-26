@@ -27,6 +27,7 @@
 static int g_finish_zone;
 static int g_nsid;
 static unsigned long long g_commit_gran;
+static int g_exp_commit;
 
 
 /**
@@ -626,6 +627,7 @@ int zbd_init(struct thread_data *td)
 
 	g_nsid = td->o.ns_id;
 	g_commit_gran = td->o.commit_gran;
+	g_exp_commit = td->o.exp_commit;
 
 	if (!zbd_verify_sizes())
 		return 1;
@@ -1345,20 +1347,22 @@ static void zbd_put_io(const struct io_u *io_u)
         // If bs >= commit_gran, ex: bs=64K, commmit_gran = 16K, then issue 64/16= 4 commit
         // commands.
 
-	if (io_u->buflen < g_commit_gran) {
-		if ((io_u->offset + io_u->buflen) >= g_commit_gran &&
-			!((io_u->offset + io_u->buflen) % g_commit_gran)) {
-		if(!zbd_issue_commit_zone(f, zone_idx, io_u->offset + io_u->buflen))
-			printf("commit zone failed on zone %d, at offset %llu\n",
-							zone_idx, io_u->offset + io_u->buflen);
-		}
-	} else {
-		//In case io_u->buflen >= g_commit_gran
-		for (i = 1; i <= io_u->buflen / g_commit_gran; i++) {
-			if(!zbd_issue_commit_zone(f, zone_idx, (io_u->offset + io_u->buflen * i)))
-				printf("commit zone failed on zone %d, at offset %llu\n",
-					zone_idx, io_u->offset + io_u->buflen);
-		}
+	if (g_exp_commit) {
+	    if (io_u->buflen < g_commit_gran) {
+		    if ((io_u->offset + io_u->buflen) >= g_commit_gran &&
+			    !((io_u->offset + io_u->buflen) % g_commit_gran)) {
+		    if(!zbd_issue_commit_zone(f, zone_idx, io_u->offset + io_u->buflen))
+			    printf("commit zone failed on zone %d, at offset %llu\n",
+							    zone_idx, io_u->offset + io_u->buflen);
+		    }
+	    } else {
+		    //In case io_u->buflen >= g_commit_gran
+		    for (i = 1; i <= io_u->buflen / g_commit_gran; i++) {
+			    if(!zbd_issue_commit_zone(f, zone_idx, (io_u->offset + io_u->buflen * i)))
+				    printf("commit zone failed on zone %d, at offset %llu\n",
+					    zone_idx, io_u->offset + io_u->buflen);
+		    }
+	    }
 	}
 
 	assert(pthread_mutex_unlock(&z->mutex) == 0);
