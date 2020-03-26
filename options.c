@@ -3416,6 +3416,17 @@ struct fio_option fio_options[FIO_MAX_OPTS] = {
 		.group	= FIO_OPT_G_ZONE,
 	},
 	{
+		.name	= "commit_gran",
+		.lname	= "Zone commit granularity",
+		.type	= FIO_OPT_INT,
+		.maxlen	= 1,
+		.off1	= offsetof(struct thread_options, commit_gran),
+		.help	= "Commit gran to issue nvme commit",
+		.def	= "16384",
+		.category = FIO_OPT_C_IO,
+		.group	= FIO_OPT_G_ZONE,
+	},
+	{
 		.name	= "lockmem",
 		.lname	= "Lock memory",
 		.type	= FIO_OPT_STR_VAL,

@@ -344,6 +344,7 @@ struct thread_options {
 	int max_open_zones;
 	bool issue_zone_finish;
 	uint32_t ns_id;
+	uint32_t commit_gran;
 	fio_fp64_t zrt;
 	fio_fp64_t zrf;
 };

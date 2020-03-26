@@ -25,6 +25,10 @@
 #include "zbd.h"
 
 static int g_finish_zone;
+static int g_nsid;
+static unsigned long long g_commit_gran;
+
+
 /**
  * zbd_zone_idx - convert an offset into a zone number
  * @f: file pointer.
@@ -204,6 +208,12 @@ static bool zbd_verify_bs(void)
 				}
 			}
 		}
+	}
+	// todo: handle bs[0] properly
+	if (td->o.bs[0] > g_commit_gran &&
+			(td->o.bs[0] % g_commit_gran)) {
+		log_info("%s: block size should be multiple of commit granularity \n", f->file_name);
+		return false;
 	}
 	return true;
 }
@@ -614,11 +624,15 @@ int zbd_init(struct thread_data *td)
 		return 1;
 	}
 
+	g_nsid = td->o.ns_id;
+	g_commit_gran = td->o.commit_gran;
+
 	if (!zbd_verify_sizes())
 		return 1;
 
 	if (!zbd_verify_bs())
 		return 1;
+
 
 	return 0;
 }
@@ -900,7 +914,38 @@ static bool is_zone_open(const struct thread_data *td, const struct fio_file *f,
 	return false;
 }
 #define	NVME_ZONE_MGMT_SEND_ZRWAA	9
-#define NVME_ZONE_ACTION_OPEN       0x3
+#define NVME_ZONE_ACTION_OPEN       	0x3
+#define NVME_ZONE_ACTION_COMMIT		0x11
+
+static bool zbd_issue_commit_zone(const struct fio_file *f, uint32_t zone_idx, uint64_t llba)
+{
+	int ret;
+	uint32_t cdw13 = 0;
+	struct fio_zone_info *z = &f->zbd_info->zone_info[zone_idx];
+	uint64_t slba = z->start;
+	struct nvme_passthru_cmd cmd;
+
+	memset(&cmd, 0, sizeof(cmd));
+	cdw13 = NVME_ZONE_ACTION_COMMIT;
+
+	cmd.opcode     = 0x79;				//nvme_cmd_zone_mgmt_send
+	cmd.nsid       = g_nsid;
+	cmd.cdw10      = slba & 0xffffffff;
+	cmd.cdw11      = slba >> 32;
+	cmd.cdw13      = cdw13;
+	cmd.addr       = (__u64)(uintptr_t)&llba;
+	cmd.data_len   = sizeof(uint64_t);
+
+	printf("Issuing commit_zone to zone %d, slba %lu, nsid %d, llba = %lu\n", zone_idx,
+						slba, g_nsid, llba);
+	ret = ioctl(f->fd, NVME_IOCTL_IO_CMD, &cmd);
+	if (ret < 0) {
+		perror("ioctl returned:");
+		return false;
+	}
+	return true;
+}
+
 static bool zbd_issue_exp_open_zrwa(const struct fio_file *f, uint32_t zone_idx,
 									uint32_t nsid)
 {
@@ -1268,7 +1313,7 @@ static void zbd_put_io(const struct io_u *io_u)
 	const struct fio_file *f = io_u->file;
 	struct zoned_block_device_info *zbd_info = f->zbd_info;
 	struct fio_zone_info *z;
-	uint32_t zone_idx;
+	uint32_t zone_idx, i;
 	struct blk_zone_range zr;
 	int ret;
 
@@ -1294,6 +1339,27 @@ static void zbd_put_io(const struct io_u *io_u)
 	dprint(FD_ZBD,
 	       "%s: terminate I/O (%lld, %llu) for zone %u\n",
 	       f->file_name, io_u->offset, io_u->buflen, zone_idx);
+
+        // If bs < commit_gran, if completed IO address is a multiple of commit gran,
+        // then issue a commit to that lba.
+        // If bs >= commit_gran, ex: bs=64K, commmit_gran = 16K, then issue 64/16= 4 commit
+        // commands.
+
+	if (io_u->buflen < g_commit_gran) {
+		if ((io_u->offset + io_u->buflen) >= g_commit_gran &&
+			!((io_u->offset + io_u->buflen) % g_commit_gran)) {
+		if(!zbd_issue_commit_zone(f, zone_idx, io_u->offset + io_u->buflen))
+			printf("commit zone failed on zone %d, at offset %llu\n",
+							zone_idx, io_u->offset + io_u->buflen);
+		}
+	} else {
+		//In case io_u->buflen >= g_commit_gran
+		for (i = 1; i <= io_u->buflen / g_commit_gran; i++) {
+			if(!zbd_issue_commit_zone(f, zone_idx, (io_u->offset + io_u->buflen * i)))
+				printf("commit zone failed on zone %d, at offset %llu\n",
+					zone_idx, io_u->offset + io_u->buflen);
+		}
+	}
 
 	assert(pthread_mutex_unlock(&z->mutex) == 0);
 	zbd_check_swd(f);
