@@ -761,6 +761,7 @@ static int fio_sgio_read_capacity(struct thread_data *td, unsigned int *bs,
 
 	/* open file independent of rest of application */
 	fd = open(f->file_name, O_RDONLY);
+	printf("fimename = %s", f->file_name);
 	if (fd < 0)
 		return -errno;
 
