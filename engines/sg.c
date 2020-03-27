@@ -1220,7 +1220,7 @@ static int fio_sgio_get_file_size(struct thread_data *td, struct fio_file *f)
 	ret = fio_sgio_read_capacity(td, &bs, &max_lba);
 	if (ret ) {
 		td_verror(td, td->error, "fio_sgio_read_capacity");
-		log_err("ioengine sg unable to successfully execute read capacity to get block size and maximum lba\n");
+		log_err("ioengine sg unable to successfully execute read capacity to get block size and maximum lba, ret = %d\n", ret);
 		return 1;
 	}
 
