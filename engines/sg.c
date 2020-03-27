@@ -782,6 +782,7 @@ static int fio_sgio_read_capacity(struct thread_data *td, unsigned int *bs,
 	hdr.dxfer_len = sizeof(buf);
 
 	ret = ioctl(fd, SG_IO, &hdr);
+	 printf("ioctl failed and returned errno %s \n",strerror(errno));
 	if (ret < 0) {
 		close(fd);
 		return ret;
