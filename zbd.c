@@ -937,6 +937,7 @@ static bool zbd_issue_commit_zone(const struct fio_file *f, uint32_t zone_idx, u
 	uint32_t cdw13 = 0;
 	struct fio_zone_info *z = &f->zbd_info->zone_info[zone_idx];
 	uint64_t slba = z->start >> NVME_ZONE_LBA_SHIFT;
+	uint64_t lba = llba >> NVME_ZONE_LBA_SHIFT;
 	struct nvme_passthru_cmd cmd;
 
 	memset(&cmd, 0, sizeof(cmd));
@@ -944,11 +945,11 @@ static bool zbd_issue_commit_zone(const struct fio_file *f, uint32_t zone_idx, u
 
 	cmd.opcode     = 0x79;				//nvme_cmd_zone_mgmt_send
 	cmd.nsid       = g_nsid;
-	cmd.cdw10      = slba & 0xffffffff;
-	cmd.cdw11      = slba >> 32;
+	cmd.cdw10      = lba & 0xffffffff;
+	cmd.cdw11      = lba >> 32;
 	cmd.cdw13      = cdw13;
-	cmd.addr       = (__u64)(uintptr_t)&llba;
-	cmd.data_len   = sizeof(uint64_t);
+	cmd.addr       = (__u64)(uintptr_t)NULL;
+	cmd.data_len   = 0;
 
 	dprint(FD_ZBD, "Issuing commit_zone to zone %d, slba %lu, nsid %d, llba = %lu\n", zone_idx,
 						slba, g_nsid, llba);
