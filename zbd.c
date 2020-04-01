@@ -929,13 +929,14 @@ static bool is_zone_open(const struct thread_data *td, const struct fio_file *f,
 #define	NVME_ZONE_MGMT_SEND_ZRWAA	9
 #define NVME_ZONE_ACTION_OPEN       	0x3
 #define NVME_ZONE_ACTION_COMMIT		0x11
+#define NVME_ZONE_LBA_SHIFT		12
 
 static bool zbd_issue_commit_zone(const struct fio_file *f, uint32_t zone_idx, uint64_t llba)
 {
 	int ret;
 	uint32_t cdw13 = 0;
 	struct fio_zone_info *z = &f->zbd_info->zone_info[zone_idx];
-	uint64_t slba = z->start;
+	uint64_t slba = z->start >> NVME_ZONE_LBA_SHIFT;
 	struct nvme_passthru_cmd cmd;
 
 	memset(&cmd, 0, sizeof(cmd));
@@ -966,7 +967,7 @@ static bool zbd_issue_exp_open_zrwa(const struct fio_file *f, uint32_t zone_idx,
 	uint32_t cdw13 = 0;
 	uint32_t zrwaa = 1;
 	struct fio_zone_info *z = &f->zbd_info->zone_info[zone_idx];
-	uint64_t slba = z->start;
+	uint64_t slba = z->start >> NVME_ZONE_LBA_SHIFT;
 	struct nvme_passthru_cmd cmd;
 	memset(&cmd, 0, sizeof(cmd));
 
