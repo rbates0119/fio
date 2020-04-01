@@ -629,6 +629,10 @@ int zbd_init(struct thread_data *td)
 	g_nsid = td->o.ns_id;
 	g_commit_gran = td->o.commit_gran;
 	g_exp_commit = td->o.exp_commit;
+	if (td->o.exp_commit && td->o.bs[0] > 1048576) {
+	    log_err("Block size must be less than 1MB with exp commit\n\n");
+	    return 1;
+	}
 
 	if (!zbd_verify_sizes())
 		return 1;
@@ -937,7 +941,7 @@ static bool zbd_issue_commit_zone(const struct fio_file *f, uint32_t zone_idx, u
 	uint32_t cdw13 = 0;
 	struct fio_zone_info *z = &f->zbd_info->zone_info[zone_idx];
 	uint64_t slba = z->start >> NVME_ZONE_LBA_SHIFT;
-	uint64_t lba = llba >> NVME_ZONE_LBA_SHIFT;
+	uint64_t lba = (llba >> NVME_ZONE_LBA_SHIFT) - 1;
 	struct nvme_passthru_cmd cmd;
 
 	memset(&cmd, 0, sizeof(cmd));
@@ -951,8 +955,8 @@ static bool zbd_issue_commit_zone(const struct fio_file *f, uint32_t zone_idx, u
 	cmd.addr       = (__u64)(uintptr_t)NULL;
 	cmd.data_len   = 0;
 
-	dprint(FD_ZBD, "Issuing commit_zone to zone %d, slba %lu, nsid %d, llba = %lu\n", zone_idx,
-						slba, g_nsid, llba);
+	dprint(FD_ZBD, "Issuing commit_zone to zone %d, slba %lu, nsid %d, lba = %lu\n", zone_idx,
+						slba, g_nsid, lba);
 	ret = ioctl(f->fd, NVME_IOCTL_IO_CMD, &cmd);
 	if (ret < 0) {
 		perror("ioctl returned:");
@@ -1328,7 +1332,7 @@ static void zbd_put_io(const struct io_u *io_u)
 	const struct fio_file *f = io_u->file;
 	struct zoned_block_device_info *zbd_info = f->zbd_info;
 	struct fio_zone_info *z;
-	uint32_t zone_idx, i;
+	uint32_t zone_idx;
 	struct blk_zone_range zr;
 	int ret;
 
@@ -1370,11 +1374,9 @@ static void zbd_put_io(const struct io_u *io_u)
 		    }
 	    } else {
 		    //In case io_u->buflen >= g_commit_gran
-		    for (i = 1; i <= io_u->buflen / g_commit_gran; i++) {
-			    if(!zbd_issue_commit_zone(f, zone_idx, (io_u->offset + io_u->buflen * i)))
-				    dprint(FD_ZBD, "commit zone failed on zone %d, at offset %llu\n",
-					    zone_idx, io_u->offset + io_u->buflen);
-		    }
+		    if(!zbd_issue_commit_zone(f, zone_idx, io_u->offset + io_u->buflen))
+			    dprint(FD_ZBD, "commit zone failed on zone %d, at offset %llu\n",
+				    zone_idx, io_u->offset + io_u->buflen);
 	    }
 	}
 
