@@ -43,7 +43,10 @@ int zbd_get_zoned_model(struct thread_data *td, struct fio_file *f,
 {
 	int ret;
 
-	ret = blkzoned_get_zoned_model(td, f, model);
+	if (td->io_ops && td->io_ops->get_zoned_model)
+		ret = td->io_ops->get_zoned_model(td, f, model);
+	else
+		ret = blkzoned_get_zoned_model(td, f, model);
 	if (ret < 0) {
 		td_verror(td, errno, "get zoned model failed");
 		log_err("%s: get zoned model failed (%d).\n",
@@ -74,7 +77,10 @@ int zbd_report_zones(struct thread_data *td, struct fio_file *f,
 {
 	int ret;
 
-	ret = blkzoned_report_zones(td, f, offset, zones, nr_zones);
+	if (td->io_ops && td->io_ops->report_zones)
+		ret = td->io_ops->report_zones(td, f, offset, zones, nr_zones);
+	else
+		ret = blkzoned_report_zones(td, f, offset, zones, nr_zones);
 	if (ret < 0) {
 		td_verror(td, errno, "report zones failed");
 		log_err("%s: report zones from sector %llu failed (%d).\n",
@@ -104,7 +110,10 @@ int zbd_reset_wp(struct thread_data *td, const struct fio_file *f,
 {
 	int ret;
 
-	ret = blkzoned_reset_wp(td, f, offset, length);
+	if (td->io_ops && td->io_ops->reset_wp)
+		ret = td->io_ops->reset_wp(td, f, offset, length);
+	else
+		ret = blkzoned_reset_wp(td, f, offset, length);
 	if (ret < 0) {
 		td_verror(td, errno, "resetting wp failed");
 		log_err("%s: resetting wp for %llu sectors at sector %llu failed (%d).\n",
@@ -968,7 +977,6 @@ static int zbd_reset_range(struct thread_data *td, const struct fio_file *f,
 	struct fio_zone_info *zb, *ze, *z;
 	int ret = 0;
 
-	assert(f->fd != -1);
 	assert(is_valid_offset(f, offset + length - 1));
 	switch (f->zbd_info->model) {
 	case ZBD_HOST_AWARE:
@@ -1046,7 +1054,6 @@ static int zbd_reset_zones(struct thread_data *td, struct fio_file *f,
 
 	dprint(FD_ZBD, "%s: examining zones %u .. %u\n", f->file_name,
 		zbd_zone_nr(f->zbd_info, zb), zbd_zone_nr(f->zbd_info, ze));
-	assert(f->fd != -1);
 	for (z = zb; z < ze; z++) {
 		if (!zbd_zone_swr(z))
 			continue;
