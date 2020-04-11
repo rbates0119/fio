@@ -1047,6 +1047,8 @@ int setup_files(struct thread_data *td)
 	if (o->fill_device)
 		td->fill_device_size = get_fs_free_counts(td);
 
+	printf("\nsetup_files: total_size = %llu\n", total_size);
+
 	/*
 	 * device/file sizes are zero and no size given, punt
 	 */
@@ -1272,6 +1274,8 @@ done:
 		if (err)
 			goto err_out;
 	}
+	printf("\nfile_setup -> done\n");
+
 	return 0;
 
 err_offset:

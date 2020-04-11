@@ -10,7 +10,6 @@
 #include <libaio.h>
 #include <sys/time.h>
 #include <sys/resource.h>
-#include <sys/ioctl.h>
 
 #include "../fio.h"
 #include "../lib/pow2.h"
@@ -98,20 +97,20 @@ static inline void ring_inc(struct libaio_data *ld, unsigned int *val,
 		*val = (*val + add) % ld->entries;
 }
 
-//static int counter = 0;
+static int counter = 0;
 
 static int fio_libaio_prep(struct thread_data fio_unused *td, struct io_u *io_u)
 {
 	struct fio_file *f = io_u->file;
 	struct iocb *iocb = &io_u->iocb;
 
-//	counter++;
+	counter++;
 
-//	if (counter == 50000) {
+	if (counter == 50000) {
 
-		dprint(FD_IO, "fio_libaio_prep ddir = %d, offset = %#llx, buflen = %#llx\n", io_u->ddir, io_u->offset, io_u->xfer_buflen);
-//		counter = 0;
-//	}
+		printf("\fio_libaio_prep ddir = %d, offset = %#llx, buflen = %#llx\n", io_u->ddir, io_u->offset, io_u->xfer_buflen);
+		counter = 0;
+	}
 
 	if (io_u->ddir == DDIR_READ) {
 		io_prep_pread(iocb, f->fd, io_u->xfer_buf, io_u->xfer_buflen, io_u->offset);
@@ -427,7 +426,7 @@ static int fio_libaio_init(struct thread_data *td)
 	 * Check for option conflicts
 	 */
 
-	printf("\nfio_libaio_init\n");
+	printf("\n fio_libaio_init\n");
 
 	if ((fio_option_is_set(to, ioprio) || fio_option_is_set(to, ioprio_class)) &&
 			o->cmdprio_percentage != 0) {

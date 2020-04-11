@@ -317,6 +317,10 @@ static int fio_file_fsync(struct thread_data *td, struct fio_file *f)
 {
 	int ret, ret2;
 
+
+	printf("\nfio_file_fsync\n");
+
+
 	if (fio_file_open(f))
 		return fio_io_sync(td, f);
 
@@ -1734,6 +1738,8 @@ static void *thread_main(void *data)
 	if (o->ioscheduler && switch_ioscheduler(td))
 		goto err;
 
+	printf("\nthread_main -> file_setup\n");
+
 	if (!o->create_serialize && setup_files(td))
 		goto err;
 
@@ -2261,7 +2267,11 @@ static void run_threads(struct sk_out *sk_out)
 		 * we don't want X number of threads getting their
 		 * client data interspersed on disk
 		 */
+
+		printf("\nrun_threads -> file_setup\n");
+
 		if (setup_files(td)) {
+
 reap:
 			exit_value++;
 			if (td->error)
