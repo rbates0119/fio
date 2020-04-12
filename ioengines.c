@@ -465,6 +465,8 @@ int td_io_open_file(struct thread_data *td, struct fio_file *f)
 	assert(f->fd == -1);
 	assert(td->io_ops->open_file);
 
+	off_t stream = td->o.fadvise_stream;
+
 	if (td->io_ops->open_file(td, f)) {
 		if (td->error == EINVAL && td->o.odirect)
 			log_err("fio: destination does not support O_DIRECT\n");
@@ -519,7 +521,7 @@ int td_io_open_file(struct thread_data *td, struct fio_file *f)
 			flags = POSIX_FADV_NORMAL;
 		}
 
-		printf("\ntd_io_open_file\n");
+		printf("\ntd_io_open_file: stream = %ul\n", stream);
 
 		if (posix_fadvise(f->fd, f->file_offset, f->io_size, flags) < 0) {
 			if (!fio_did_warn(FIO_WARN_FADVISE))
