@@ -316,6 +316,12 @@ static inline int fio_set_sched_idle(void)
 
 #define FIO_HAVE_WRITE_HINT
 
+#ifndef POSIX_FADV_STREAMID
+#define POSIX_FADV_STREAMID	8
+#endif
+
+#define FIO_HAVE_STREAMID
+
 #ifndef RWF_HIPRI
 #define RWF_HIPRI	0x00000001
 #endif

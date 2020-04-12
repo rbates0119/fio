@@ -451,7 +451,6 @@ void td_io_commit(struct thread_data *td)
 	td->io_u_queued = 0;
 }
 
-static int stream;
 
 int td_io_open_file(struct thread_data *td, struct fio_file *f)
 {
@@ -464,7 +463,7 @@ int td_io_open_file(struct thread_data *td, struct fio_file *f)
 		return 0;
 	}
 
-	stream = td->o.fadvise_stream;
+	off_t stream = td->o.write_stream;
 
 	assert(!fio_file_open(f));
 	assert(f->fd == -1);
@@ -524,9 +523,10 @@ int td_io_open_file(struct thread_data *td, struct fio_file *f)
 			flags = POSIX_FADV_NORMAL;
 		}
 
-		printf("\ntd_io_open_file: hint = %u, stream = %u\n", td->o.fadvise_hint, stream);
+		printf("\ntd_io_open_file: write hint = %u, stream = %u\n", td->o.write_hint, stream);
 
 		if (posix_fadvise(f->fd, f->file_offset, f->io_size, flags) < 0) {
+			printf("\nfio: fadvise hint failed\n");
 			if (!fio_did_warn(FIO_WARN_FADVISE))
 				log_err("fio: fadvise hint failed\n");
 		}
@@ -549,6 +549,18 @@ int td_io_open_file(struct thread_data *td, struct fio_file *f)
 
 		if (fcntl(f->fd, cmd, &hint) < 0) {
 			td_verror(td, errno, "fcntl write hint");
+			goto err;
+		}
+	}
+#endif
+
+#ifdef FIO_HAVE_STREAMID
+	if (td->o.write_stream &&
+	    (f->filetype == FIO_TYPE_BLOCK || f->filetype == FIO_TYPE_FILE)) {
+		off_t stream = td->o.write_stream;
+
+		if (posix_fadvise(f->fd, stream, f->io_size, POSIX_FADV_STREAMID) < 0) {
+			td_verror(td, errno, "write streamid");
 			goto err;
 		}
 	}

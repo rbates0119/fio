@@ -3722,6 +3722,17 @@ struct fio_option fio_options[FIO_MAX_OPTS] = {
 	},
 #endif
 	{
+		.name	= "write_stream",
+		.lname	= "Write stream",
+		.type	= FIO_OPT_INT,
+		.off1	= offsetof(struct thread_options, write_stream),
+		.help	= "Use fadvise() to advise the kernel on write stream",
+		.def	= "1",
+		.category = FIO_OPT_C_FILE,
+		.group	= FIO_OPT_G_INVALID,
+	},
+#ifdef FIO_HAVE_STREAMID
+	{
 		.name	= "create_serialize",
 		.lname	= "Create serialize",
 		.type	= FIO_OPT_BOOL,
@@ -3731,6 +3742,7 @@ struct fio_option fio_options[FIO_MAX_OPTS] = {
 		.category = FIO_OPT_C_FILE,
 		.group	= FIO_OPT_G_INVALID,
 	},
+#endif
 	{
 		.name	= "create_fsync",
 		.lname	= "Create fsync",
