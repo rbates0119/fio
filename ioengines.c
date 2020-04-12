@@ -451,6 +451,8 @@ void td_io_commit(struct thread_data *td)
 	td->io_u_queued = 0;
 }
 
+static int stream;
+
 int td_io_open_file(struct thread_data *td, struct fio_file *f)
 {
 	if (fio_file_closing(f)) {
@@ -461,11 +463,12 @@ int td_io_open_file(struct thread_data *td, struct fio_file *f)
 		get_file(f);
 		return 0;
 	}
+
+	stream = td->o.fadvise_stream;
+
 	assert(!fio_file_open(f));
 	assert(f->fd == -1);
 	assert(td->io_ops->open_file);
-
-	off_t stream = td->o.fadvise_stream;
 
 	if (td->io_ops->open_file(td, f)) {
 		if (td->error == EINVAL && td->o.odirect)
@@ -521,7 +524,7 @@ int td_io_open_file(struct thread_data *td, struct fio_file *f)
 			flags = POSIX_FADV_NORMAL;
 		}
 
-		printf("\ntd_io_open_file: stream = %ul\n", stream);
+		printf("\ntd_io_open_file: hint = %u, stream = %u\n", td->o.fadvise_hint, stream);
 
 		if (posix_fadvise(f->fd, f->file_offset, f->io_size, flags) < 0) {
 			if (!fio_did_warn(FIO_WARN_FADVISE))
