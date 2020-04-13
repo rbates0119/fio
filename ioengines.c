@@ -523,8 +523,6 @@ int td_io_open_file(struct thread_data *td, struct fio_file *f)
 			flags = POSIX_FADV_NORMAL;
 		}
 
-		printf("\ntd_io_open_file: write hint = %u, stream = %u\n", td->o.write_hint, stream);
-
 		if (posix_fadvise(f->fd, f->file_offset, f->io_size, flags) < 0) {
 			printf("\nfio: fadvise hint failed\n");
 			if (!fio_did_warn(FIO_WARN_FADVISE))
@@ -561,7 +559,11 @@ int td_io_open_file(struct thread_data *td, struct fio_file *f)
 
 		printf("\ntd_io_open_file: f->filetype = %d\n", f->filetype);
 
-		if (posix_fadvise(f->fd, stream, f->io_size, POSIX_FADV_STREAMID) < 0) {
+		if (posix_fadvise(f->fd, stream, 1, 0x0A) < 0) {
+			td_verror(td, errno, "write streamid");
+			goto err;
+		}
+		if (posix_fadvise(f->fd, stream, 2, 0x0A) < 0) {
 			td_verror(td, errno, "write streamid");
 			goto err;
 		}
