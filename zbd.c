@@ -1260,6 +1260,23 @@ zbd_find_zone(struct thread_data *td, struct io_u *io_u,
 	return NULL;
 }
 
+int zbd_finish_full_zone(struct fio_zone_info *z, const struct io_u *io_u)
+{
+    int ret = 0;
+    const struct fio_file *f = io_u->file;
+    struct blk_zone_range zr;
+
+    if ((z->start + z->capacity == io_u->offset + io_u->buflen) && g_finish_zone) {
+        z->finish_zone = 1;
+	zr.sector = z->start >> 9;
+	zr.nr_sectors =  f->zbd_info->zone_size >> 9;
+	ret = ioctl(f->fd, BLKFINISHZONE, &zr);
+	if (ret < 0)
+	    perror("Issuing finish failed with: ");
+    }
+    return ret;
+}
+
 /**
  * zbd_queue_io - update the write pointer of a sequential zone
  * @io_u: I/O unit
@@ -1318,6 +1335,7 @@ static void zbd_queue_io(struct io_u *io_u, int q, bool success)
 unlock:
 	if (!success || q != FIO_Q_QUEUED) {
 		/* BUSY or COMPLETED: unlock the zone */
+		zbd_finish_full_zone(z, io_u);
 		pthread_mutex_unlock(&z->mutex);
 		io_u->zbd_put_io = NULL;
 	}
@@ -1333,8 +1351,6 @@ static void zbd_put_io(const struct io_u *io_u)
 	struct zoned_block_device_info *zbd_info = f->zbd_info;
 	struct fio_zone_info *z;
 	uint32_t zone_idx;
-	struct blk_zone_range zr;
-	int ret;
 
 	if (!zbd_info)
 		return;
@@ -1346,14 +1362,7 @@ static void zbd_put_io(const struct io_u *io_u)
 	if (z->type != BLK_ZONE_TYPE_SEQWRITE_REQ)
 		return;
 
-	if ((z->start + z->capacity == io_u->offset + io_u->buflen) && g_finish_zone) {
-		z->finish_zone = 1;
-		zr.sector = z->start >> 9;
-		zr.nr_sectors =  f->zbd_info->zone_size >> 9;
-		ret = ioctl(f->fd, BLKFINISHZONE, &zr);
-		if (ret < 0)
-			perror("issuing finish failed");
-	}
+	zbd_finish_full_zone(z, io_u);
 
 	dprint(FD_ZBD,
 	       "%s: terminate I/O (%lld, %llu) for zone %u\n",
