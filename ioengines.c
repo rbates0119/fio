@@ -559,11 +559,7 @@ int td_io_open_file(struct thread_data *td, struct fio_file *f)
 
 		printf("\ntd_io_open_file: f->filetype = %d\n", f->filetype);
 
-		if (posix_fadvise(f->fd, stream, 1, 0x0A) < 0) {
-			td_verror(td, errno, "write streamid");
-			goto err;
-		}
-		if (posix_fadvise(f->fd, stream, 2, 0x0A) < 0) {
+		if (posix_fadvise(f->fd, stream, STREAM_F_INODE | STREAM_F_FILE, POSIX_FADV_STREAM_ASSIGN) < 0) {
 			td_verror(td, errno, "write streamid");
 			goto err;
 		}

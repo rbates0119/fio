@@ -308,6 +308,9 @@ static int fio_libaio_commit(struct thread_data *td)
 	if (!ld->queued)
 		return 0;
 
+
+	printf("\fio_libaio_commit: stream = %d\n", td->o.write_stream);
+
 	do {
 		long nr = ld->queued;
 
@@ -426,8 +429,6 @@ static int fio_libaio_init(struct thread_data *td)
 	/*
 	 * Check for option conflicts
 	 */
-
-	printf("\nfio_libaio_init\n");
 
 	if ((fio_option_is_set(to, ioprio) || fio_option_is_set(to, ioprio_class)) &&
 			o->cmdprio_percentage != 0) {

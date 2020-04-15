@@ -1738,8 +1738,6 @@ static void *thread_main(void *data)
 	if (o->ioscheduler && switch_ioscheduler(td))
 		goto err;
 
-	printf("\nthread_main -> file_setup\n");
-
 	if (!o->create_serialize && setup_files(td))
 		goto err;
 
@@ -2267,8 +2265,6 @@ static void run_threads(struct sk_out *sk_out)
 		 * we don't want X number of threads getting their
 		 * client data interspersed on disk
 		 */
-
-		printf("\nrun_threads -> file_setup\n");
 
 		if (setup_files(td)) {
 
