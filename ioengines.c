@@ -548,6 +548,20 @@ int td_io_open_file(struct thread_data *td, struct fio_file *f)
 	}
 #endif
 
+#ifdef FIO_HAVE_STREAMID
+	if ((td->o.stream_id > 0) &&
+	    (f->filetype == FIO_TYPE_BLOCK || f->filetype == FIO_TYPE_FILE)) {
+		off_t stream = td->o.stream_id;
+
+		printf("\ntd_io_open_file: f->filetype = %d\n", f->filetype);
+
+		if (posix_fadvise(f->fd, stream, STREAM_F_INODE | STREAM_F_FILE, POSIX_FADV_STREAM_ASSIGN) < 0) {
+			td_verror(td, errno, "stream_id");
+			goto err;
+		}
+	}
+#endif
+
 	if (td->o.odirect && !OS_O_DIRECT && fio_set_directio(td, f))
 		goto err;
 

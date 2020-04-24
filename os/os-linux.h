@@ -316,6 +316,28 @@ static inline int fio_set_sched_idle(void)
 
 #define FIO_HAVE_WRITE_HINT
 
+#ifndef POSIX_FADV_STREAM_ASSIGN
+#define POSIX_FADV_STREAM_ASSIGN    0xa /* allocate a stream */
+#endif
+
+#ifndef POSIX_FADV_STREAM_RELEASE
+#define POSIX_FADV_STREAM_RELEASE   0xb /* release a stream */
+#endif
+
+#ifndef POSIX_FADV_STREAM_GET
+#define POSIX_FADV_STREAM_GET     0xc /* get current stream */
+#endif
+
+#ifndef STREAM_F_INODE
+#define STREAM_F_INODE  1 /* associate stream ID with inode */
+#endif
+
+#ifndef STREAM_F_FILE
+#define STREAM_F_FILE   2 /* associate stream ID with file */
+#endif
+
+#define FIO_HAVE_STREAMID
+
 #ifndef RWF_HIPRI
 #define RWF_HIPRI	0x00000001
 #endif
