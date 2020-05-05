@@ -1031,11 +1031,14 @@ static bool zbd_open_zone(struct thread_data *td, const struct io_u *io_u,
 	res = false;
 	if (f->zbd_info->num_open_zones >= td->o.max_open_zones)
 		goto out;
-	dprint(FD_ZBD, "%s: opening zone %d\n", f->file_name, zone_idx);
+	dprint(FD_ZBD, "%s: opening zone %d%s\n", f->file_name, zone_idx,
+					td->o.zrwa_alloc ? " with ZRWA": "");
 	f->zbd_info->open_zones[f->zbd_info->num_open_zones++] = zone_idx;
 	// Issue an explicit open with ZRWAA bit set via io-passtrhu.
-	if(!zbd_issue_exp_open_zrwa(f, zone_idx, td->o.ns_id))
-		goto out;
+	if (td->o.zrwa_alloc) {
+		if(!zbd_issue_exp_open_zrwa(f, zone_idx, td->o.ns_id))
+			goto out;
+	}
 	z->open = 1;
 	res = true;
 
