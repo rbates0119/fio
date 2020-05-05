@@ -213,7 +213,7 @@ static bool zbd_verify_bs(void)
 	// todo: handle bs[0] properly
 	if (td->o.bs[0] > g_commit_gran &&
 			(td->o.bs[0] % g_commit_gran)) {
-		log_info("%s: block size should be multiple of commit granularity \n", f->file_name);
+		log_info("Block size should be multiple of commit granularity \n");
 		return false;
 	}
 	return true;
@@ -626,12 +626,21 @@ int zbd_init(struct thread_data *td)
 		return 1;
 	}
 
+	if ((td->o.exp_commit || td->o.zrwa_alloc) && !td->o.ns_id) {
+		log_err("nsid is required for zrwa operations\n\n");
+		return 1;
+	}
 	g_nsid = td->o.ns_id;
 	g_commit_gran = td->o.commit_gran;
 	g_exp_commit = td->o.exp_commit;
 	if (td->o.exp_commit && td->o.bs[0] > 1048576) {
 	    log_err("Block size must be less than 1MB with exp commit\n\n");
 	    return 1;
+	}
+
+	if (td->o.zrwa_overwrite_percent && td->o.exp_commit) {
+		log_err("Explicit commit not supported with zrwa overwrite option \n");
+		return 1;
 	}
 
 	if (!zbd_verify_sizes())
