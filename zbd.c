@@ -626,6 +626,13 @@ int zbd_init(struct thread_data *td)
 		return 1;
 	}
 
+	if (td->o.exp_commit || td->o.zrwa_overwrite_percent) {
+		if (!td->o.zrwa_alloc) {
+			log_err("zone needs to be opened with zrwa_alloc for zrwa operations\n\n");
+			return 1;
+		}
+	}
+
 	if ((td->o.exp_commit || td->o.zrwa_alloc) && !td->o.ns_id) {
 		log_err("nsid is required for zrwa operations\n\n");
 		return 1;
