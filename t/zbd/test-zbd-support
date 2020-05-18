@@ -175,62 +175,73 @@ test4() {
 
     off=$((first_sequential_zone_sector * 512 + 129 * zone_size))
     size=$((zone_size))
+    capacity=$(capacity_sum 1 $off $dev)
+
     [ -n "$is_zbd" ] && reset_zone "$dev" $((off / 512))
-    opts+=("--name=$dev" "--filename=$dev" "--offset=$off" "--bs=$size")
+    opts+=("--name=$dev" "--filename=$dev" "--offset=$off" "--bs=$capacity")
     opts+=("--size=$size" "--thread=1" "--read_beyond_wp=1")
     opts+=("--ioengine=psync" "--rw=read" "--direct=1" "--disable_lat=1")
     opts+=("--zonemode=zbd" "--zonesize=${zone_size}")
     run_fio "${opts[@]}" >> "${logfile}.${test_number}" 2>&1 || return $?
-    check_read $size || return $?
+    check_read ${capacity} || return $?
 }
 
 # Sequential write to sequential zones.
 test5() {
-    local size
+    local size off capacity
 
+    off=$((first_sequential_zone_sector * 512))
+    capacity=$(capacity_sum 4 $off $dev)
     size=$((4 * zone_size))
     run_fio_on_seq --ioengine=psync --iodepth=1 --rw=write		\
 		   --bs="$(max $((zone_size / 64)) "$logical_block_size")"\
 		   --do_verify=1 --verify=md5				\
 		   >>"${logfile}.${test_number}" 2>&1 || return $?
-    check_written $size || return $?
-    check_read $size || return $?
+    check_written $capacity || return $?
+    check_read $capacity || return $?
 }
 
 # Sequential read from sequential zones. Must be run after test5.
 test6() {
-    local size
+    local size off capacity
 
+    off=$((first_sequential_zone_sector * 512))
+    capacity=$(capacity_sum 4 $off $dev)
     size=$((4 * zone_size))
     run_fio_on_seq --ioengine=psync --iodepth=1 --rw=read		\
 		   --bs="$(max $((zone_size / 64)) "$logical_block_size")"\
 		   >>"${logfile}.${test_number}" 2>&1 || return $?
-    check_read $size || return $?
+    check_read $capacity || return $?
 }
 
 # Random write to sequential zones, libaio, queue depth 1.
 test7() {
     local size=$((zone_size))
+    local off capacity
 
+    off=$((first_sequential_zone_sector * 512))
+    capacity=$(capacity_sum 1 $off $dev)
     run_fio_on_seq --ioengine=libaio --iodepth=1 --rw=randwrite		\
 		   --bs="$(min 16384 "${zone_size}")"			\
 		   --do_verify=1 --verify=md5 --size="$size"		\
 		   >>"${logfile}.${test_number}" 2>&1 || return $?
-    check_written $size || return $?
-    check_read $size || return $?
+    check_written $capacity || return $?
+    check_read $capacity || return $?
 }
 
 # Random write to sequential zones, libaio, queue depth 64.
 test8() {
-    local size
+    local size off capacity
 
     size=$((4 * zone_size))
+    off=$((first_sequential_zone_sector * 512))
+    capacity=$(capacity_sum 4 $off $dev)
     run_fio_on_seq --ioengine=libaio --iodepth=64 --rw=randwrite	\
 		   --bs="$(min 16384 "${zone_size}")"			\
 		   --do_verify=1 --verify=md5				\
 		   >>"${logfile}.${test_number}" 2>&1 || return $?
-    check_written $size || return $?
-    check_read $size || return $?
+    check_written $capacity || return $?
+    check_read $capacity || return $?
 }
 
 # Random write to sequential zones, sg, queue depth 1.
@@ -269,39 +280,45 @@ test10() {
 
 # Random write to sequential zones, libaio, queue depth 64, random block size.
 test11() {
-    local size
+    local size off capacity
 
     size=$((4 * zone_size))
+    off=$((first_sequential_zone_sector * 512))
+    capacity=$(capacity_sum 4 $off $dev)
     run_fio_on_seq --ioengine=libaio --iodepth=64 --rw=randwrite	\
 		   --bsrange=4K-64K --do_verify=1 --verify=md5		\
 		   --debug=zbd >>"${logfile}.${test_number}" 2>&1 || return $?
-    check_written $size || return $?
-    check_read $size || return $?
+    check_written $capacity || return $?
+    check_read $capacity || return $?
 }
 
 # Random write to sequential zones, libaio, queue depth 64, max 1 open zone.
 test12() {
-    local size
+    local size off capacity
 
     size=$((8 * zone_size))
+    off=$((first_sequential_zone_sector * 512))
+    capacity=$(capacity_sum 8 $off $dev)
     run_fio_on_seq --ioengine=libaio --iodepth=64 --rw=randwrite --bs=16K     \
 		   --max_open_zones=1 --size=$size --do_verify=1 --verify=md5 \
 		   --debug=zbd >>"${logfile}.${test_number}" 2>&1 || return $?
-    check_written $size || return $?
-    check_read $size || return $?
+    check_written $capacity || return $?
+    check_read $capacity || return $?
 }
 
 # Random write to sequential zones, libaio, queue depth 64, max 4 open zones.
 test13() {
-    local size
+    local size off capacity
 
     size=$((8 * zone_size))
+    off=$((first_sequential_zone_sector * 512))
+    capacity=$(capacity_sum 8 $off $dev)
     run_fio_on_seq --ioengine=libaio --iodepth=64 --rw=randwrite --bs=16K     \
 		   --max_open_zones=4 --size=$size --do_verify=1 --verify=md5 \
 		   --debug=zbd						      \
 		   >>"${logfile}.${test_number}" 2>&1 || return $?
-    check_written $size || return $?
-    check_read $size || return $?
+    check_written $capacity || return $?
+    check_read $capacity || return $?
 }
 
 # Random write to conventional zones.
@@ -324,7 +341,7 @@ test14() {
 
 # Sequential read on a mix of empty and full zones.
 test15() {
-    local i off size
+    local i off size capactity
 
     for ((i=0;i<4;i++)); do
 	[ -n "$is_zbd" ] &&
@@ -333,11 +350,13 @@ test15() {
     done
     off=$(((first_sequential_zone_sector + 2 * sectors_per_zone) * 512))
     size=$((2 * zone_size))
+    capacity=$(capacity_sum 2 $off $dev)
+
     run_one_fio_job --ioengine=psync --rw=write --bs=$((zone_size / 16))\
 		    --zonemode=zbd --zonesize="${zone_size}" --offset=$off \
 		    --size=$size >>"${logfile}.${test_number}" 2>&1 ||
 	return $?
-    check_written $size || return $?
+    check_written $capacity || return $?
     off=$((first_sequential_zone_sector * 512))
     size=$((4 * zone_size))
     run_one_fio_job --ioengine=psync --rw=read --bs=$((zone_size / 16))	\
@@ -345,7 +364,7 @@ test15() {
 		    --size=$((size)) >>"${logfile}.${test_number}" 2>&1 ||
 	return $?
     if [ -n "$is_zbd" ]; then
-	check_read $((size / 2))
+	check_read $((capacity))
     else
 	check_read $size
     fi
@@ -365,7 +384,7 @@ test16() {
 
 # Random reads and writes in the last zone.
 test17() {
-    local io off read size written
+    local io off read size written capacity
 
     off=$(((disk_size / zone_size - 1) * zone_size))
     size=$((disk_size - off))
@@ -373,11 +392,12 @@ test17() {
     if [ -n "$is_zbd" ]; then
 	reset_zone "$dev" $((off / 512)) || return $?
     fi
+    capacity=$(capacity_sum 1 $off $dev)
     run_one_fio_job --ioengine=psync --rw=write --offset="$off"		\
 		    --zonemode=zbd --zonesize="${zone_size}"		\
-		    --bs="$zone_size" --size="$zone_size"		\
+		    --bs=$capacity --size="$zone_size"		\
 		    >>"${logfile}.${test_number}" 2>&1 || return $?
-    check_written "$zone_size" || return $?
+    check_written $capacity || return $?
     run_one_fio_job --ioengine=libaio --iodepth=8 --rw=randrw --bs=4K	\
 		    --zonemode=zbd --zonesize="${zone_size}"		\
 		    --offset=$off --loops=2 --norandommap=1\
@@ -429,13 +449,17 @@ test23() {
 
 test24() {
     local bs loops=9 size=$((zone_size))
+    local off capacity
+
+    off=$((first_sequential_zone_sector * 512))
+    capacity=$(capacity_sum 1 $off $dev)
 
     bs=$(min $((256*1024)) "$zone_size")
     run_fio_on_seq --ioengine=psync --rw=write --bs="$bs" --size=$size	 \
 		   --loops=$loops					 \
 		   --zone_reset_frequency=.01 --zone_reset_threshold=.90 \
 		   >> "${logfile}.${test_number}" 2>&1 || return $?
-    check_written $((size * loops)) || return $?
+    check_written $((capacity * loops)) || return $?
     check_reset_count -eq 8 ||
 	check_reset_count -eq 9 ||
 	check_reset_count -eq 10 || return $?
@@ -460,15 +484,19 @@ test25() {
 
 write_to_first_seq_zone() {
     local loops=4 r
+    local off capacity
+
+    off=$((first_sequential_zone_sector * 512))
+    capacity=$(capacity_sum 1 $off $dev)
 
     r=$(((RANDOM << 16) | RANDOM))
     run_fio --name="$dev" --filename="$dev" --ioengine=psync --rw="$1"	\
 	    --thread=1 --do_verify=1 --verify=md5 --direct=1 --bs=4K	\
-	    --offset=$((first_sequential_zone_sector * 512))		\
-	    "--size=$zone_size" --loops=$loops --randseed="$r"		\
+	    --offset=$off						\
+	    --size=$zone_size --loops=$loops --randseed="$r"		\
 	    --zonemode=zbd --zonesize="${zone_size}" --group_reporting=1	\
 	    --gtod_reduce=1 >> "${logfile}.${test_number}" 2>&1 || return $?
-    check_written $((loops * zone_size)) || return $?
+    check_written $((loops * capacity)) || return $?
 }
 
 # Overwrite the first sequential zone four times sequentially.
@@ -488,14 +516,15 @@ test28() {
     off=$((first_sequential_zone_sector * 512 + 64 * zone_size))
     [ -n "$is_zbd" ] && reset_zone "$dev" $((off / 512))
     opts=("--debug=zbd")
+    capacity=$(capacity_sum 1 $off $dev)
     for ((i=0;i<jobs;i++)); do
 	opts+=("--name=job$i" "--filename=$dev" "--offset=$off" "--bs=16K")
-	opts+=("--size=$zone_size" "--ioengine=psync" "--rw=randwrite")
+	opts+=("--size=$zone_size" "--io_size=$capacity" "--ioengine=psync" "--rw=randwrite")
 	opts+=("--thread=1" "--direct=1" "--zonemode=zbd")
 	opts+=("--zonesize=${zone_size}" "--group_reporting=1")
     done
     run_fio "${opts[@]}" >> "${logfile}.${test_number}" 2>&1 || return $?
-    check_written $((jobs * zone_size)) || return $?
+    check_written $((jobs * $capacity)) || return $?
     check_reset_count -eq $jobs ||
 	check_reset_count -eq $((jobs - 1)) ||
 	return $?
@@ -582,10 +611,13 @@ test32() {
 # zone size.
 test33() {
     local bs io_size size
+    local off capacity=0;
 
+    off=$((first_sequential_zone_sector * 512))
+    capacity=$(capacity_sum 1 $off $dev)
     size=$((2 * zone_size))
-    io_size=$((5 * zone_size))
-    bs=$((3 * zone_size / 4))
+    io_size=$((5 * capacity))
+    bs=$((3 * capacity / 4))
     run_fio_on_seq --ioengine=psync --iodepth=1 --rw=write --size=$size	\
 		   --io_size=$io_size --bs=$bs				\
 		   >> "${logfile}.${test_number}" 2>&1 || return $?
@@ -634,8 +666,9 @@ test36() {
 
 # Test 3/4 for the I/O boundary rounding code: $size > $zone_size.
 test37() {
-    local bs off size
+    local bs off size capacity
 
+    capacity=$(capacity_sum 1 $first_sequential_zone_sector $dev)
     if [ "$first_sequential_zone_sector" = 0 ]; then
 	off=0
     else
@@ -647,7 +680,7 @@ test37() {
 		    --rw=write --do_verify=1 --verify=md5 --bs=$bs	    \
 		    --zonemode=zbd --zonesize="${zone_size}"		    \
 		    >> "${logfile}.${test_number}" 2>&1
-    check_written $((zone_size)) || return $?
+    check_written $capacity || return $?
 }
 
 # Test 4/4 for the I/O boundary rounding code: $offset > $disk_size - $zone_size
@@ -753,6 +786,26 @@ test47() {
 		    --zonemode=zbd --zoneskip=1		 \
 		    >> "${logfile}.${test_number}" 2>&1 && return 1
     grep -q 'zoneskip 1 is not a multiple of the device zone size' "${logfile}.${test_number}"
+}
+
+# Check if fio handles --zonecapacity on a normal block device correctly
+test48() {
+
+    if [ -n "$is_zbd" ]; then
+	echo "$dev is not a regular block device" \
+	     >>"${logfile}.${test_number}"
+	return 0
+    fi
+
+    size=$((2 * zone_size))
+    capacity=$((zone_size * 3 / 4))
+
+    run_one_fio_job --ioengine=psync --rw=write \
+		    --zonemode=zbd --zonesize="${zone_size}" \
+		    --zonecapacity=${capacity} \
+		    --verify=md5  --size=${size} >>"${logfile}.${test_number}" 2>&1 ||
+	return $?
+    check_read $((capacity * 2)) || return $?
 }
 
 tests=()

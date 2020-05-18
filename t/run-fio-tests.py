@@ -21,7 +21,7 @@
 #
 #
 # REQUIREMENTS
-# - Python 3
+# - Python 3.5 (subprocess.run)
 # - Linux (libaio ioengine, zbd tests, etc)
 # - The artifact directory must be on a file system that accepts 512-byte IO
 #   (t0002, t0003, t0004).
@@ -39,16 +39,18 @@
 #
 # TODO  run multiple tests simultaneously
 # TODO  Add sgunmap tests (requires SAS SSD)
-# TODO  automatically detect dependencies and skip tests accordingly
 #
 
 import os
 import sys
 import json
 import time
+import shutil
 import logging
 import argparse
+import platform
 import subprocess
+import multiprocessing
 from pathlib import Path
 
 
@@ -135,7 +137,7 @@ class FioExeTest(FioTest):
                                     universal_newlines=True)
             proc.communicate(timeout=self.success['timeout'])
             exticode_file.write('{0}\n'.format(proc.returncode))
-            logging.debug("return code: %d" % proc.returncode)
+            logging.debug("Test %d: return code: %d" % (self.testnum, proc.returncode))
             self.output['proc'] = proc
         except subprocess.TimeoutExpired:
             proc.terminate()
@@ -177,8 +179,8 @@ class FioExeTest(FioTest):
                     self.failure_reason = "{0} zero return code,".format(self.failure_reason)
                     self.passed = False
 
+        stderr_size = os.path.getsize(self.stderr_file)
         if 'stderr_empty' in self.success:
-            stderr_size = os.path.getsize(self.stderr_file)
             if self.success['stderr_empty']:
                 if stderr_size != 0:
                     self.failure_reason = "{0} stderr not empty,".format(self.failure_reason)
@@ -252,7 +254,7 @@ class FioJobTest(FioExeTest):
         if not self.precon_failed:
             super(FioJobTest, self).run()
         else:
-            logging.debug("precondition step failed")
+            logging.debug("Test %d: precondition step failed" % self.testnum)
 
     def check_result(self):
         if self.precon_failed:
@@ -262,15 +264,38 @@ class FioJobTest(FioExeTest):
 
         super(FioJobTest, self).check_result()
 
-        if 'json' in self.output_format:
-            output_file = open(os.path.join(self.test_dir, self.fio_output), "r")
-            file_data = output_file.read()
-            output_file.close()
+        if not self.passed:
+            return
+
+        if not 'json' in self.output_format:
+            return
+
+        try:
+            with open(os.path.join(self.test_dir, self.fio_output), "r") as output_file:
+                file_data = output_file.read()
+        except EnvironmentError:
+            self.failure_reason = "{0} unable to open output file,".format(self.failure_reason)
+            self.passed = False
+            return
+
+        #
+        # Sometimes fio informational messages are included at the top of the
+        # JSON output, especially under Windows. Try to decode output as JSON
+        # data, lopping off up to the first four lines
+        #
+        lines = file_data.splitlines()
+        for i in range(5):
+            file_data = '\n'.join(lines[i:])
             try:
                 self.json_data = json.loads(file_data)
             except json.JSONDecodeError:
-                self.failure_reason = "{0} unable to decode JSON data,".format(self.failure_reason)
-                self.passed = False
+                continue
+            else:
+                logging.debug("Test %d: skipped %d lines decoding JSON data" % (self.testnum, i))
+                return
+
+        self.failure_reason = "{0} unable to decode JSON data,".format(self.failure_reason)
+        self.passed = False
 
 
 class FioJobTest_t0005(FioJobTest):
@@ -303,7 +328,7 @@ class FioJobTest_t0006(FioJobTest):
 
         ratio = self.json_data['jobs'][0]['read']['io_kbytes'] \
             / self.json_data['jobs'][0]['write']['io_kbytes']
-        logging.debug("ratio: %f" % ratio)
+        logging.debug("Test %d: ratio: %f" % (self.testnum, ratio))
         if ratio < 1.99 or ratio > 2.01:
             self.failure_reason = "{0} read/write ratio mismatch,".format(self.failure_reason)
             self.passed = False
@@ -339,7 +364,7 @@ class FioJobTest_t0008(FioJobTest):
             return
 
         ratio = self.json_data['jobs'][0]['write']['io_kbytes'] / 16568
-        logging.debug("ratio: %f" % ratio)
+        logging.debug("Test %d: ratio: %f" % (self.testnum, ratio))
 
         if ratio < 0.99 or ratio > 1.01:
             self.failure_reason = "{0} bytes written mismatch,".format(self.failure_reason)
@@ -359,7 +384,7 @@ class FioJobTest_t0009(FioJobTest):
         if not self.passed:
             return
 
-        logging.debug('elapsed: %d' % self.json_data['jobs'][0]['elapsed'])
+        logging.debug('Test %d: elapsed: %d' % (self.testnum, self.json_data['jobs'][0]['elapsed']))
 
         if self.json_data['jobs'][0]['elapsed'] < 60:
             self.failure_reason = "{0} elapsed time mismatch,".format(self.failure_reason)
@@ -381,15 +406,99 @@ class FioJobTest_t0011(FioJobTest):
         iops1 = self.json_data['jobs'][0]['read']['iops']
         iops2 = self.json_data['jobs'][1]['read']['iops']
         ratio = iops2 / iops1
-        logging.debug("ratio: %f" % ratio)
+        logging.debug("Test %d: iops1: %f" % (self.testnum, iops1))
+        logging.debug("Test %d: ratio: %f" % (self.testnum, ratio))
 
-        if iops1 < 999 or iops1 > 1001:
+        if iops1 < 998 or iops1 > 1002:
             self.failure_reason = "{0} iops value mismatch,".format(self.failure_reason)
             self.passed = False
 
         if ratio < 7 or ratio > 9:
             self.failure_reason = "{0} iops ratio mismatch,".format(self.failure_reason)
             self.passed = False
+
+
+class Requirements(object):
+    """Requirements consists of multiple run environment characteristics.
+    These are to determine if a particular test can be run"""
+
+    _linux = False
+    _libaio = False
+    _zbd = False
+    _root = False
+    _zoned_nullb = False
+    _not_macos = False
+    _unittests = False
+    _cpucount4 = False
+
+    def __init__(self, fio_root):
+        Requirements._not_macos = platform.system() != "Darwin"
+        Requirements._linux = platform.system() == "Linux"
+
+        if Requirements._linux:
+            try:
+                config_file = os.path.join(fio_root, "config-host.h")
+                with open(config_file, "r") as config:
+                    contents = config.read()
+            except Exception:
+                print("Unable to open {0} to check requirements".format(config_file))
+                Requirements._zbd = True
+            else:
+                Requirements._zbd = "CONFIG_LINUX_BLKZONED" in contents
+                Requirements._libaio = "CONFIG_LIBAIO" in contents
+
+            Requirements._root = (os.geteuid() == 0)
+            if Requirements._zbd and Requirements._root:
+                    subprocess.run(["modprobe", "null_blk"],
+                                   stdout=subprocess.PIPE,
+                                   stderr=subprocess.PIPE)
+                    if os.path.exists("/sys/module/null_blk/parameters/zoned"):
+                        Requirements._zoned_nullb = True
+
+        if platform.system() == "Windows":
+            utest_exe = "unittest.exe"
+        else:
+            utest_exe = "unittest"
+        unittest_path = os.path.join(fio_root, "unittests", utest_exe)
+        Requirements._unittests = os.path.exists(unittest_path)
+
+        Requirements._cpucount4 = multiprocessing.cpu_count() >= 4
+
+        req_list = [Requirements.linux,
+                    Requirements.libaio,
+                    Requirements.zbd,
+                    Requirements.root,
+                    Requirements.zoned_nullb,
+                    Requirements.not_macos,
+                    Requirements.unittests,
+                    Requirements.cpucount4]
+        for req in req_list:
+            value, desc = req()
+            logging.debug("Requirements: Requirement '%s' met? %s" % (desc, value))
+
+    def linux():
+        return Requirements._linux, "Linux required"
+
+    def libaio():
+        return Requirements._libaio, "libaio required"
+
+    def zbd():
+        return Requirements._zbd, "Zoned block device support required"
+
+    def root():
+        return Requirements._root, "root required"
+
+    def zoned_nullb():
+        return Requirements._zoned_nullb, "Zoned null block device support required"
+
+    def not_macos():
+        return Requirements._not_macos, "platform other than macOS required"
+
+    def unittests():
+        return Requirements._unittests, "Unittests support required"
+
+    def cpucount4():
+        return Requirements._cpucount4, "4+ CPUs required"
 
 
 SUCCESS_DEFAULT = {
@@ -415,6 +524,7 @@ TEST_LIST = [
             'success':          SUCCESS_DEFAULT,
             'pre_job':          None,
             'pre_success':      None,
+            'requirements':     [],
         },
         {
             'test_id':          2,
@@ -423,6 +533,7 @@ TEST_LIST = [
             'success':          SUCCESS_DEFAULT,
             'pre_job':          't0002-13af05ae-pre.fio',
             'pre_success':      None,
+            'requirements':     [Requirements.linux, Requirements.libaio],
         },
         {
             'test_id':          3,
@@ -431,6 +542,7 @@ TEST_LIST = [
             'success':          SUCCESS_NONZERO,
             'pre_job':          't0003-0ae2c6e1-pre.fio',
             'pre_success':      SUCCESS_DEFAULT,
+            'requirements':     [Requirements.linux, Requirements.libaio],
         },
         {
             'test_id':          4,
@@ -439,6 +551,7 @@ TEST_LIST = [
             'success':          SUCCESS_DEFAULT,
             'pre_job':          None,
             'pre_success':      None,
+            'requirements':     [Requirements.linux, Requirements.libaio],
         },
         {
             'test_id':          5,
@@ -448,6 +561,7 @@ TEST_LIST = [
             'pre_job':          None,
             'pre_success':      None,
             'output_format':    'json',
+            'requirements':     [],
         },
         {
             'test_id':          6,
@@ -457,6 +571,7 @@ TEST_LIST = [
             'pre_job':          None,
             'pre_success':      None,
             'output_format':    'json',
+            'requirements':     [Requirements.linux, Requirements.libaio],
         },
         {
             'test_id':          7,
@@ -466,6 +581,7 @@ TEST_LIST = [
             'pre_job':          None,
             'pre_success':      None,
             'output_format':    'json',
+            'requirements':     [],
         },
         {
             'test_id':          8,
@@ -475,6 +591,7 @@ TEST_LIST = [
             'pre_job':          None,
             'pre_success':      None,
             'output_format':    'json',
+            'requirements':     [],
         },
         {
             'test_id':          9,
@@ -484,6 +601,9 @@ TEST_LIST = [
             'pre_job':          None,
             'pre_success':      None,
             'output_format':    'json',
+            'requirements':     [Requirements.not_macos,
+                                 Requirements.cpucount4],
+                                # mac os does not support CPU affinity
         },
         {
             'test_id':          10,
@@ -492,6 +612,7 @@ TEST_LIST = [
             'success':          SUCCESS_DEFAULT,
             'pre_job':          None,
             'pre_success':      None,
+            'requirements':     [],
         },
         {
             'test_id':          11,
@@ -501,6 +622,7 @@ TEST_LIST = [
             'pre_job':          None,
             'pre_success':      None,
             'output_format':    'json',
+            'requirements':     [],
         },
         {
             'test_id':          1000,
@@ -508,6 +630,7 @@ TEST_LIST = [
             'exe':              't/axmap',
             'parameters':       None,
             'success':          SUCCESS_DEFAULT,
+            'requirements':     [],
         },
         {
             'test_id':          1001,
@@ -515,6 +638,7 @@ TEST_LIST = [
             'exe':              't/ieee754',
             'parameters':       None,
             'success':          SUCCESS_DEFAULT,
+            'requirements':     [],
         },
         {
             'test_id':          1002,
@@ -522,6 +646,7 @@ TEST_LIST = [
             'exe':              't/lfsr-test',
             'parameters':       ['0xFFFFFF', '0', '0', 'verify'],
             'success':          SUCCESS_STDERR,
+            'requirements':     [],
         },
         {
             'test_id':          1003,
@@ -529,6 +654,7 @@ TEST_LIST = [
             'exe':              't/readonly.py',
             'parameters':       ['-f', '{fio_path}'],
             'success':          SUCCESS_DEFAULT,
+            'requirements':     [],
         },
         {
             'test_id':          1004,
@@ -536,6 +662,7 @@ TEST_LIST = [
             'exe':              't/steadystate_tests.py',
             'parameters':       ['{fio_path}'],
             'success':          SUCCESS_DEFAULT,
+            'requirements':     [],
         },
         {
             'test_id':          1005,
@@ -543,6 +670,7 @@ TEST_LIST = [
             'exe':              't/stest',
             'parameters':       None,
             'success':          SUCCESS_STDERR,
+            'requirements':     [],
         },
         {
             'test_id':          1006,
@@ -550,6 +678,7 @@ TEST_LIST = [
             'exe':              't/strided.py',
             'parameters':       ['{fio_path}'],
             'success':          SUCCESS_DEFAULT,
+            'requirements':     [],
         },
         {
             'test_id':          1007,
@@ -557,6 +686,8 @@ TEST_LIST = [
             'exe':              't/zbd/run-tests-against-regular-nullb',
             'parameters':       None,
             'success':          SUCCESS_DEFAULT,
+            'requirements':     [Requirements.linux, Requirements.zbd,
+                                 Requirements.root],
         },
         {
             'test_id':          1008,
@@ -564,6 +695,8 @@ TEST_LIST = [
             'exe':              't/zbd/run-tests-against-zoned-nullb',
             'parameters':       None,
             'success':          SUCCESS_DEFAULT,
+            'requirements':     [Requirements.linux, Requirements.zbd,
+                                 Requirements.root, Requirements.zoned_nullb],
         },
         {
             'test_id':          1009,
@@ -571,6 +704,7 @@ TEST_LIST = [
             'exe':              'unittests/unittest',
             'parameters':       None,
             'success':          SUCCESS_DEFAULT,
+            'requirements':     [Requirements.unittests],
         },
 ]
 
@@ -587,31 +721,47 @@ def parse_args():
                         help='list of test(s) to skip')
     parser.add_argument('-o', '--run-only', nargs='+', type=int,
                         help='list of test(s) to run, skipping all others')
+    parser.add_argument('-d', '--debug', action='store_true',
+                        help='provide debug output')
+    parser.add_argument('-k', '--skip-req', action='store_true',
+                        help='skip requirements checking')
     args = parser.parse_args()
 
     return args
 
 
 def main():
-    logging.basicConfig(level=logging.INFO)
-
     args = parse_args()
+    if args.debug:
+        logging.basicConfig(level=logging.DEBUG)
+    else:
+        logging.basicConfig(level=logging.INFO)
+
     if args.fio_root:
         fio_root = args.fio_root
     else:
-        fio_root = Path(__file__).absolute().parent.parent
-    logging.debug("fio_root: %s" % fio_root)
+        fio_root = str(Path(__file__).absolute().parent.parent)
+    print("fio root is %s" % fio_root)
 
     if args.fio:
         fio_path = args.fio
     else:
-        fio_path = os.path.join(fio_root, "fio")
-    logging.debug("fio_path: %s" % fio_path)
+        if platform.system() == "Windows":
+            fio_exe = "fio.exe"
+        else:
+            fio_exe = "fio"
+        fio_path = os.path.join(fio_root, fio_exe)
+    print("fio path is %s" % fio_path)
+    if not shutil.which(fio_path):
+        print("Warning: fio executable not found")
 
     artifact_root = args.artifact_root if args.artifact_root else \
         "fio-test-{0}".format(time.strftime("%Y%m%d-%H%M%S"))
     os.mkdir(artifact_root)
     print("Artifact directory is %s" % artifact_root)
+
+    if not args.skip_req:
+        req = Requirements(fio_root)
 
     passed = 0
     failed = 0
@@ -621,7 +771,7 @@ def main():
         if (args.skip and config['test_id'] in args.skip) or \
            (args.run_only and config['test_id'] not in args.run_only):
             skipped = skipped + 1
-            print("Test {0} SKIPPED".format(config['test_id']))
+            print("Test {0} SKIPPED (User request)".format(config['test_id']))
             continue
 
         if issubclass(config['test_class'], FioJobTest):
@@ -651,12 +801,31 @@ def main():
                 parameters = [p.format(fio_path=fio_path) for p in config['parameters']]
             else:
                 parameters = None
+            if Path(exe_path).suffix == '.py' and platform.system() == "Windows":
+                if parameters:
+                    parameters.insert(0, exe_path)
+                else:
+                    parameters = [exe_path]
+                exe_path = "python.exe"
             test = config['test_class'](exe_path, parameters,
                                         config['success'])
         else:
             print("Test {0} FAILED: unable to process test config".format(config['test_id']))
             failed = failed + 1
             continue
+
+        if not args.skip_req:
+            skip = False
+            for req in config['requirements']:
+                ok, reason = req()
+                skip = not ok
+                logging.debug("Test %d: Requirement '%s' met? %s" % (config['test_id'], reason, ok))
+                if skip:
+                    break
+            if skip:
+                print("Test {0} SKIPPED ({1})".format(config['test_id'], reason))
+                skipped = skipped + 1
+                continue
 
         test.setup(artifact_root, config['test_id'])
         test.run()
@@ -667,6 +836,10 @@ def main():
         else:
             result = "FAILED: {0}".format(test.failure_reason)
             failed = failed + 1
+            with open(test.stderr_file, "r") as stderr_file:
+                logging.debug("Test %d: stderr:\n%s" % (config['test_id'], stderr_file.read()))
+            with open(test.stdout_file, "r") as stdout_file:
+                logging.debug("Test %d: stdout:\n%s" % (config['test_id'], stdout_file.read()))
         print("Test {0} {1}".format(config['test_id'], result))
 
     print("{0} test(s) passed, {1} failed, {2} skipped".format(passed, failed, skipped))

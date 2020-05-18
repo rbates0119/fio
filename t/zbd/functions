@@ -30,6 +30,35 @@ first_sequential_zone() {
     fi
 }
 
+# Reports the summed capacity of $1 number of zones starting from offset $2
+# on device $3
+capacity_sum() {
+    local nr_zones=$1
+    local sector=$(($2 / 512))
+    local dev=$3
+    local capacity=0 num
+
+    if [ -z "$is_zbd" ]; then
+        echo $((zone_size * nr_zones))
+	return
+    fi
+
+    if [ -n "${blkzone}" ]; then
+	while read num; do
+	    capacity=$((capacity + num))
+	done < <(${blkzone} report -c "$nr_zones" -o "$sector" "$dev" |
+			 grep -Po 'cap \K[0-9a-zA-Z]*')
+    fi
+
+    if ((capacity == 0)); then
+       # No capacity reporting support, fall back on zone size
+       result=($(first_sequential_zone $3))
+       capacity=$((${result[1]} * nr_zones))
+    fi
+
+    echo $((capacity * 512))
+}
+
 max_open_zones() {
     local dev=$1
 

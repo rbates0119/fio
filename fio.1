@@ -738,12 +738,13 @@ Accepted values are:
 .RS
 .TP
 .B none
-The \fBzonerange\fR, \fBzonesize\fR and \fBzoneskip\fR parameters are ignored.
+The \fBzonerange\fR, \fBzonesize\fR \fBzonecapacity and \fBzoneskip\fR
+parameters are ignored.
 .TP
 .B strided
 I/O happens in a single zone until \fBzonesize\fR bytes have been transferred.
 After that number of bytes has been transferred processing of the next zone
-starts.
+starts. The \fBzonecapacity parameter is ignored.
 .TP
 .B zbd
 Zoned block device mode. I/O happens sequentially in each zone, even if random
@@ -770,6 +771,13 @@ For \fBzonemode\fR=zbd, this is the size of a single zone. The
 zoned block device, the specified \fBzonesize\fR must be 0 or equal to the
 device zone size. For a regular block device or file, the specified
 \fBzonesize\fR must be at least 512B.
+.TP
+.BI zonecapacity \fR=\fPint
+For \fBzonemode\fR=zbd, this defines the capacity of a single zone,
+which is the writeable area starting from the zone start adress.
+This is parameter only applies when using \fBzonemode\fR=zbd
+in combination with non-zoned block devices. If not specified it
+defaults to zone size.
 .TP
 .BI zoneskip \fR=\fPint
 For \fBzonemode\fR=strided, the number of bytes to skip after \fBzonesize\fR
