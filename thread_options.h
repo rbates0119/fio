@@ -631,7 +631,7 @@ struct thread_options_pack {
 
 	uint32_t zone_mode;
 
-	uint32_t stream_id;
+	uint8_t stream_id;
 
 } __attribute__((packed));
 
