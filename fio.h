@@ -449,6 +449,9 @@ struct thread_data {
 
 	char verror[FIO_VERROR_SIZE];
 
+	int fd;
+	int stream_id;
+
 #ifdef CONFIG_CUDA
 	/*
 	 * for GPU memory management
