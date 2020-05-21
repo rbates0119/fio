@@ -348,6 +348,7 @@ struct thread_options {
 	uint32_t exp_commit;
 	uint32_t zrwa_alloc;
 	uint32_t zrwa_overwrite_percent;
+	uint32_t zrwa_divisor;
 	fio_fp64_t zrt;
 	fio_fp64_t zrf;
 };
