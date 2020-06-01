@@ -718,7 +718,7 @@ static int zbd_reset_range(struct thread_data *td, const struct fio_file *f,
 		.nr_sectors     = length >> 9,
 	};
 	uint32_t zone_idx_b, zone_idx_e;
-	struct fio_zone_info *zb, *ze, *z;
+	struct fio_zone_info *zb, *ze, *z, *zn;
 	int ret = 0;
 
 	assert(f->fd != -1);
@@ -736,6 +736,8 @@ static int zbd_reset_range(struct thread_data *td, const struct fio_file *f,
 		if (td->o.zrwa_alloc) {
 			if(!zbd_issue_exp_open_zrwa(f, zbd_zone_idx(f, offset), td->o.ns_id))
 				return -1;
+			zn = &f->zbd_info->zone_info[zbd_zone_idx(f, offset)];
+			zn->finish_zone = 0;
 		}
 		break;
 	case ZBD_DM_NONE:
@@ -1418,8 +1420,6 @@ static void zbd_put_io(const struct io_u *io_u)
 	if (z->type != BLK_ZONE_TYPE_SEQWRITE_REQ)
 		return;
 
-	zbd_finish_full_zone(z, io_u);
-
 	dprint(FD_ZBD,
 	       "%s: terminate I/O (%lld, %llu) for zone %u\n",
 	       f->file_name, io_u->offset, io_u->buflen, zone_idx);
@@ -1444,6 +1444,8 @@ static void zbd_put_io(const struct io_u *io_u)
 				    zone_idx, io_u->offset + io_u->buflen);
 	    }
 	}
+
+	zbd_finish_full_zone(z, io_u);
 
 	assert(pthread_mutex_unlock(&z->mutex) == 0);
 	zbd_check_swd(f);
