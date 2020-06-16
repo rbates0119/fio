@@ -387,7 +387,6 @@ static int init_zone_info(struct thread_data *td, struct fio_file *f)
 		p->wp = p->start + zone_size;
 		p->type = BLK_ZONE_TYPE_SEQWRITE_REQ;
 		p->cond = BLK_ZONE_COND_EMPTY;
-		p->finish_zone = 0;
 	}
 	/* a sentinel */
 	p->start = nr_zones * zone_size;
@@ -718,7 +717,7 @@ static int zbd_reset_range(struct thread_data *td, const struct fio_file *f,
 		.nr_sectors     = length >> 9,
 	};
 	uint32_t zone_idx_b, zone_idx_e;
-	struct fio_zone_info *zb, *ze, *z, *zn;
+	struct fio_zone_info *zb, *ze, *z;
 	int ret = 0;
 
 	assert(f->fd != -1);
@@ -732,12 +731,6 @@ static int zbd_reset_range(struct thread_data *td, const struct fio_file *f,
 			log_err("%s: resetting wp for %llu sectors at sector %llu failed (%d).\n",
 				f->file_name, zr.nr_sectors, zr.sector, errno);
 			return ret;
-		}
-		if (td->o.zrwa_alloc) {
-			if(!zbd_issue_exp_open_zrwa(f, zbd_zone_idx(f, offset), td->o.ns_id))
-				return -1;
-			zn = &f->zbd_info->zone_info[zbd_zone_idx(f, offset)];
-			zn->finish_zone = 0;
 		}
 		break;
 	case ZBD_DM_NONE:
@@ -1105,16 +1098,12 @@ static void zbd_close_zone(struct thread_data *td, const struct fio_file *f,
 			   unsigned int open_zone_idx)
 {
 	uint32_t zone_idx;
-	struct fio_zone_info *z;
 
 	assert(open_zone_idx < f->zbd_info->num_open_zones);
 	zone_idx = f->zbd_info->open_zones[open_zone_idx];
 	if (td->o.max_open_zones && td->o.issue_zone_finish) {
-		z = &f->zbd_info->zone_info[zone_idx];
-		if (z->finish_zone) {
-			z->finish_zone = 0;
-		} else
-			return;
+		io_u_quiesce(td);
+		return;
 	}
 
 	memmove(f->zbd_info->open_zones + open_zone_idx,
@@ -1318,19 +1307,35 @@ zbd_find_zone(struct thread_data *td, struct io_u *io_u,
 
 int zbd_finish_full_zone(struct fio_zone_info *z, const struct io_u *io_u)
 {
-    int ret = 0;
+    int i, ret = 0, open_zone_idx = -1;
     const struct fio_file *f = io_u->file;
     struct blk_zone_range zr;
+    uint32_t zone_idx;
 
+    zone_idx = zbd_zone_idx(f, io_u->offset);
     if ((z->start + z->capacity == io_u->offset + io_u->buflen) && g_finish_zone) {
-        z->finish_zone = 1;
 	zr.sector = z->start >> 9;
 	zr.nr_sectors =  f->zbd_info->zone_size >> 9;
+	dprint(FD_ZBD, "%s(%s): Issuing BLKFINISHZONE on zone %d\n", __func__,
+			f->file_name, zone_idx);
 	ret = ioctl(f->fd, BLKFINISHZONE, &zr);
 	if (ret < 0)
 	    perror("Issuing finish failed with: ");
 	if (g_ow)
 		f->zbd_info->ow_count = f->zbd_info->ow_blk_count;
+
+	for (i = 0; i < f->zbd_info->num_open_zones; i++)
+		if (f->zbd_info->open_zones[i] == zone_idx)
+			open_zone_idx = i;
+
+	assert(open_zone_idx < f->zbd_info->num_open_zones);
+
+	memmove(f->zbd_info->open_zones + open_zone_idx,
+		f->zbd_info->open_zones + open_zone_idx + 1,
+		(FIO_MAX_OPEN_ZBD_ZONES - (open_zone_idx + 1)) *
+		sizeof(f->zbd_info->open_zones[0]));
+	f->zbd_info->num_open_zones--;
+	f->zbd_info->zone_info[zone_idx].open = 0;
     }
     return ret;
 }
@@ -1366,8 +1371,8 @@ static void zbd_queue_io(struct io_u *io_u, int q, bool success)
 		goto unlock;
 
 	dprint(FD_ZBD,
-	       "%s: queued I/O (%lld, %llu) for zone %u\n",
-	       f->file_name, io_u->offset, io_u->buflen, zone_idx);
+		"%s: queued I/O (%lld, %llu) for zone %u\n",
+		f->file_name, io_u->offset, io_u->buflen, zone_idx);
 
 	switch (io_u->ddir) {
 	case DDIR_WRITE:
@@ -1421,8 +1426,8 @@ static void zbd_put_io(const struct io_u *io_u)
 		return;
 
 	dprint(FD_ZBD,
-	       "%s: terminate I/O (%lld, %llu) for zone %u\n",
-	       f->file_name, io_u->offset, io_u->buflen, zone_idx);
+		"%s: terminate I/O (%lld, %llu) for zone %u\n",
+		f->file_name, io_u->offset, io_u->buflen, zone_idx);
 
         // If bs < commit_gran, if completed IO address is a multiple of commit gran,
         // then issue a commit to that lba.
@@ -1689,6 +1694,11 @@ enum io_u_action zbd_adjust_block(struct thread_data *td, struct io_u *io_u)
 			zb->reset_zone = 0;
 			if (zbd_reset_zone(td, f, zb) < 0)
 				goto eof;
+			if (td->o.zrwa_alloc) {
+				if(!zbd_issue_exp_open_zrwa(f,
+				zbd_zone_idx(f, zb->start), td->o.ns_id))
+					return -1;
+			}
 		}
 		/* Make writes occur at the write pointer */
 		assert(!zbd_zone_full(f, zb, min_bs));

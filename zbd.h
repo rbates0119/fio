@@ -53,7 +53,6 @@ struct fio_zone_info {
 	enum blk_zone_cond	cond:4;
 	unsigned int		open:1;
 	unsigned int		reset_zone:1;
-	unsigned int		finish_zone:1;
 #endif
 };
 
