@@ -276,6 +276,9 @@ static int fio_libaio_commit(struct thread_data *td)
 	struct io_u **io_us;
 	struct timespec ts;
 	int ret, wait_start = 0;
+#ifdef FIO_HAVE_STREAMID
+	off_t stream = td->stream_id;
+#endif
 
 	if (!ld->queued)
 		return 0;
@@ -288,8 +291,6 @@ static int fio_libaio_commit(struct thread_data *td)
 		iocbs = ld->iocbs + ld->tail;
 
 #ifdef FIO_HAVE_STREAMID
-
-		off_t stream = td->stream_id;
 		if (posix_fadvise(td->fd, stream, STREAM_F_INODE | STREAM_F_FILE, POSIX_FADV_STREAM_ASSIGN) < 0) {
 			td_verror(td, errno, "stream_id");
 			return  0;
