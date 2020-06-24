@@ -483,11 +483,23 @@ static int parse_zone_info(struct thread_data *td, struct fio_file *f)
 				else
 					p->wp = p->start + zone_size;
 				break;
+			case BLK_ZONE_COND_IMP_OPEN:
+			case BLK_ZONE_COND_EXP_OPEN:
+				assert(z->start <= z->wp);
+				assert(z->wp <= z->start + (zone_size >> 9));
+				p->wp = z->wp << 9;
+				if (td->o.max_open_zones > 0) {
+					zbd_info->open_zones[zbd_info->num_open_zones++] = j;
+					p->open = 1;
+					assert(zbd_info->num_open_zones <= td->o.max_open_zones);
+				}
+				break;
 			default:
 				assert(z->start <= z->wp);
 				assert(z->wp <= z->start + (zone_size >> 9));
 				p->wp = z->wp << 9;
 				break;
+
 			}
 			p->type = z->type;
 			p->cond = z->cond;
@@ -627,7 +639,7 @@ static uint32_t get_divisor(uint32_t overwrite_percentage) {
 
 int zbd_init(struct thread_data *td)
 {
-	struct fio_file *f;
+	struct fio_file *f = NULL;
 	int i, start_z_idx, nr_zones;
 	unsigned long long total_ow, ow_blks_per_zone;
 
@@ -1195,9 +1207,16 @@ examine_zone:
 
 	/* Zone 'z' is full, so try to open a new zone. */
 	for (i = f->io_size / f->zbd_info->zone_size; i > 0; i--) {
-		zone_idx++;
-		pthread_mutex_unlock(&z->mutex);
-		z++;
+		if (td_random(td)) {
+			srand(time(NULL));
+			zone_idx = rand() % (uint32_t)(f->io_size / f->zbd_info->zone_size);
+			pthread_mutex_unlock(&z->mutex);
+			z = &f->zbd_info->zone_info[zone_idx];
+		} else {
+			zone_idx++;
+			z++;
+			pthread_mutex_unlock(&z->mutex);
+		}
 		if (!is_valid_offset(f, z->start)) {
 			/* Wrap-around. */
 			zone_idx = zbd_zone_idx(f, f->file_offset);
@@ -1425,14 +1444,13 @@ static void zbd_put_io(const struct io_u *io_u)
 	if (z->type != BLK_ZONE_TYPE_SEQWRITE_REQ)
 		return;
 
-	dprint(FD_ZBD,
-		"%s: terminate I/O (%lld, %llu) for zone %u\n",
+	dprint(FD_ZBD, "%s: terminate I/O (%lld, %llu) for zone %u\n",
 		f->file_name, io_u->offset, io_u->buflen, zone_idx);
 
-        // If bs < commit_gran, if completed IO address is a multiple of commit gran,
-        // then issue a commit to that lba.
-        // If bs >= commit_gran, ex: bs=64K, commmit_gran = 16K, then issue 64/16= 4 commit
-        // commands.
+    // If bs < commit_gran, if completed IO address is a multiple of commit gran,
+    // then issue a commit to that lba.
+    // If bs >= commit_gran, ex: bs=64K, commmit_gran = 16K, then issue 64/16= 4 commit
+    // commands.
 
 	if (g_exp_commit) {
 	    if (io_u->buflen < g_commit_gran) {
