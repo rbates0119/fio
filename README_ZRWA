@@ -1,0 +1,136 @@
+FIO support for BoraBora ZNS drive.
+1 Introduction
+Zoned Name Space divides the logical address space of a namespace into zones.
+Each zone provides an LBA range that shall be written sequential, and if 
+written again shall be explicitly reset. The interface allows namespaces to 
+expose natural boundaries for internal device structures, and offload 
+management of internal mapping tables to the host. They are similar to SMR hard
+drives in terms of write constraints.
+Flexible IO (FIO) is a storage media benchmarking tool, which supports a 
+variety of IO workloads on multitude of types of devices and reports the
+statistics. Upstream FIO supports zoned devices(SMR), and is currently 
+capable of running workloads on them. However, ZNS drives have some more
+special cases which are not yet supported in upstream FIO. To be able to use
+Fio to run IO workloads on Borabora ZNS drives, CTO team has added some support
+to Fio and made it available to run on borabora drives.
+
+2 Scope of this document.
+This is to document the changes made to Fio specifically for bora-bora and 
+how to use it. Fio already has a lot of options to tune the workloads as 
+needed, but the expected behavior of some of these options may change slightly
+as the dynamics of the underlying device is not the same as regular
+block device.
+
+3 Terminology
+These are some terms, that needs to be understood in context of ZNS drive and
+Fio.
+Zone size: Size of each zone, will be always a power of 2 value. And zones can
+only be written sequentially. All writes happen at write pointer only.
+
+Zone capacity: This is the amount of writable bytes in a zone. It can be equal
+to or less than zone size.
+
+Max_open_zones: Max Number of zones that can be opened simultaneously, as
+supported by drive.
+
+ZRWA: Zone Random Write Area. This allows random writes to a small area called
+zrwa, starting at write pointer till the end of zrwa.
+
+Size(fio): Indicates the range starting from offset to offset + size. Fio 
+issues IOs in between this range. This should be a minimum of zone-size.
+
+Io_size(fio): Amount of IO in bytes to be issued by Fio. By default it is 
+same as size option. If this is greater than “size” option, fio will wrap
+around the last zone which falls within offset and offset + size.
+
+Direct : Do direct IOs (without using system buffer cache), this needs to be 1,
+while running on zns drive.
+
+Explicit-commit: Commit an lba at given commit-granularity.
+
+Overwrite-percent: Amount of extra writes in bytes, that needs to go into zrwa.
+
+Max-open-zones: Max open zones supported by drive at any given point of time.
+
+Points to note:
+1. Below documentation is specifically for the Fio which is internally modified
+by CTO team to specifically be used on bora-bora drives. Behavior defined here
+may not be available or same or aligned with the latest upstream Fio behavior
+and will not be matched with the upstream version.
+
+2. ZNS drives are quite a bit different than normal block devices with regards
+to how writes are done. i.e. the writes are expected to be always sequential
+and written at the write pointer(WP) of the particular zone. Attempts to write
+to an lba not pointed by the WP will result in write failure. ZRWA however,
+allows random writes in a short window of 1MB starting at WP.
+
+3. ZNS drives report their size as equivalent to number-of-zones * zone-size.
+However, if the zone-capacity is less than zone size, then there are holes in
+between the zones and the actual available space is 
+number-of-zones * zone-capacity. So for a drive with 100 zones, and
+zone-size 2GB and zone-capacity 1.1GB, the drive size will be reported as
+200GB but actually available space to write is 1.1 * 100 = 110GB.
+
+4. For fully writing to a single zone, say zone 0, in cases where zone-capacity
+is less than zone-size,  for ex: lets say zone-size=2GB, zone-capacity=1.1GB,
+now mentioning size=2GB to fio is interpreted as 2Giga bytes to be written
+between byte 0 to 2GB, but each zone has a writable capacity of 1.1GB only,
+so Fio will write 1.1GB to first zone, wrap around and reset the same zone and
+write remaining(0.88GB) to the same zone and then exits. So, to write to 1 zone
+completely, specify io_size=1.12GB and size=2GB in the config file.
+
+5. Similarly, for a fio-sequential-workload to fully write to a bora bora
+drive(100% full), if totally 100 zones are on the device, 
+set io_size= n * zone_capacity (i.e. 100 * 1.1GB  =110GB) and size=200GB,
+this ensures that fio does not reset and overwrite already written zones to
+write “size” bytes of IO.
+
+6. For random-write workloads, fio will select the zones randomly but has write
+to those zones sequentially only. Specifying “size” options indicates that fio
+can randomly select zones, which are in between from 0 to “size” bytes. Fio
+will select x zones whose start lba is in the 0 – size range and write “size”
+bytes to these zones and if needed will reset the zones to complete writing
+“size” bytes. For ex: If ZS=2GB,and ZC=1GB, if size specified = 10GB,
+then 5 zones(10/2 = 5), i.e. zone0 to zone4 are in the given range and are
+selected to perform the writes based on max-open-zones option.
+Since the ZC=1GB, fio will end up writing more than once to all the
+zones(0 to 4) to complete 10GB writes.
+
+7. Borabora drives currently support a max of 12 open zones. This means
+writing/opening a 13th zone will result in a failure. At any point of time,
+only 12 zones can be opened and operated upon. Using the option
+max_open_zones=X (< =12) in the config enables fio to not open more than
+the max open zones.
+
+8. Fio option can be directly specified on the command line
+using ”- -option=x” or in the config file using “option=x” format.
+
+
+
+New options added for bora-bora device:
+
+issue_zone_finish: Since max-open-zones supported is limited in the drive,
+this option explicitly closes a zone after the last lba of that zone is written
+successfully, so tha. Setting issue_zone_finish=1 is needed when running a full
+drive write workload. This should be set to 0 during a read workload.
+
+Zrwa_alloc: Set zrwa_alloc=1 to enable ZRWA mode in Fio. This explicitly opens
+a zone with a random write area attached. Ns-id option is a must with
+this option.
+
+Ns_id: This indicates the namespace-id which supports ZRWA. This is mandatory
+if zrwa_alloc is enabled. "nvme list" command should display the nsid.
+
+zrwa_overwrite_percent: This indicates the amount of overwrites to be done per
+zone keeping zone-capacity as reference. Available only with ZRWA mode.
+For ex: if this is set to 5, and zone-capacity is 1GB, then 50MB extra writes
+are done to each zone which is the range of offset to offset+size. 
+
+exp_commit = This indicates that fio has to send an explicit-commit command to
+the drive at a commit granularity of “commit_gran” option.
+Available only with ZRWA mode. Not supported with zrwa_overwrite_percent option.
+
+commit_gran= This is the minimum amount of write needed before Fio can send the
+explicit_commit command to the drive. By default it is 16KB. Available only
+with ZRWA mode and when explicit_commit is set.
+

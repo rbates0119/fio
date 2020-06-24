@@ -342,6 +342,13 @@ struct thread_options {
 	/* Parameters that affect zonemode=zbd */
 	unsigned int read_beyond_wp;
 	int max_open_zones;
+	bool issue_zone_finish;
+	uint32_t ns_id;
+	uint32_t commit_gran;
+	uint32_t exp_commit;
+	uint32_t zrwa_alloc;
+	uint32_t zrwa_overwrite_percent;
+	uint32_t zrwa_divisor;
 	fio_fp64_t zrt;
 	fio_fp64_t zrf;
 };

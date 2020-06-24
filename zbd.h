@@ -33,6 +33,7 @@ enum io_u_action {
  * struct fio_zone_info - information about a single ZBD zone
  * @start: zone start location (bytes)
  * @wp: zone write pointer location (bytes)
+ * @capacity: maximum writable location within a zone (bytes)
  * @verify_block: number of blocks that have been verified for this zone
  * @mutex: protects the modifiable members in this structure
  * @type: zone type (BLK_ZONE_TYPE_*)
@@ -46,6 +47,7 @@ struct fio_zone_info {
 	pthread_mutex_t		mutex;
 	uint64_t		start;
 	uint64_t		wp;
+	uint64_t		capacity;
 	uint32_t		verify_block;
 	enum blk_zone_type	type:2;
 	enum blk_zone_cond	cond:4;
@@ -86,6 +88,8 @@ struct zoned_block_device_info {
 	uint32_t		num_open_zones;
 	uint32_t		write_cnt;
 	uint32_t		open_zones[FIO_MAX_OPEN_ZBD_ZONES];
+	uint32_t                ow_count; // current pending overwrites to zone
+	uint32_t		ow_blk_count; // overwrites to be done in blocks per zone
 	struct fio_zone_info	zone_info[0];
 };
 
@@ -97,6 +101,8 @@ bool zbd_unaligned_write(int error_code);
 void setup_zbd_zone_mode(struct thread_data *td, struct io_u *io_u);
 enum io_u_action zbd_adjust_block(struct thread_data *td, struct io_u *io_u);
 char *zbd_write_status(const struct thread_stat *ts);
+bool zbd_issue_exp_open_zrwa(const struct fio_file *f, uint32_t zone_idx,
+						uint32_t nsid);
 
 static inline void zbd_queue_io_u(struct io_u *io_u, enum fio_q_status status)
 {
@@ -152,6 +158,12 @@ static inline void zbd_put_io_u(struct io_u *io_u) {}
 static inline void setup_zbd_zone_mode(struct thread_data *td,
 					struct io_u *io_u)
 {
+}
+
+bool zbd_issue_exp_open_zrwa(const struct fio_file *f, uint32_t zone_idx,
+					uint32_t nsid)
+{
+	return 0;
 }
 
 #endif

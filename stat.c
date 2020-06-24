@@ -1974,6 +1974,7 @@ void sum_thread_stats(struct thread_stat *dst, struct thread_stat *src,
 	dst->total_submit += src->total_submit;
 	dst->total_complete += src->total_complete;
 	dst->nr_zone_resets += src->nr_zone_resets;
+	dst->zrwa_overwrite_bytes += src->zrwa_overwrite_bytes;
 	dst->cachehit += src->cachehit;
 	dst->cachemiss += src->cachemiss;
 }
@@ -2674,6 +2675,7 @@ void reset_io_stats(struct thread_data *td)
 	ts->total_submit = 0;
 	ts->total_complete = 0;
 	ts->nr_zone_resets = 0;
+	ts->zrwa_overwrite_bytes = 0;
 	ts->cachehit = ts->cachemiss = 0;
 }
 

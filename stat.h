@@ -225,6 +225,7 @@ struct thread_stat {
 
 	/* ZBD stats */
 	uint64_t nr_zone_resets;
+	uint64_t zrwa_overwrite_bytes;
 
 	uint64_t nr_block_infos;
 	uint32_t block_infos[MAX_NR_BLOCK_INFOS];
