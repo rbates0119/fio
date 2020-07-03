@@ -290,8 +290,6 @@ static int fio_libaio_commit(struct thread_data *td)
 		io_us = ld->io_us + ld->tail;
 		iocbs = ld->iocbs + ld->tail;
 
-		dprint(FD_STREAMS, "stream_id = %ld \n", stream);
-
 #ifdef FIO_HAVE_STREAMID
 		dprint(FD_STREAMS, "stream_id = %ld \n", stream);
 
