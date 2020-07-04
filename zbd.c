@@ -502,6 +502,7 @@ static int parse_zone_info(struct thread_data *td, struct fio_file *f)
 			}
 			p->type = z->type;
 			p->cond = z->cond;
+			p->ow_count = 0;
 			if (j > 0 && p->start != p[-1].start + zone_size) {
 				log_info("%s: invalid zone data\n",
 					 f->file_name);
@@ -695,18 +696,22 @@ int zbd_init(struct thread_data *td)
 		// extra IOs to each zone.
 		ow_blks_per_zone = ((f->zbd_info->zone_info[0].capacity / td->o.bs[1]) *
 					td->o.zrwa_overwrite_percent) / 100;
+		f->zbd_info->ow_blk_interval = (f->zbd_info->zone_info[0].capacity / td->o.bs[1]) / ow_blks_per_zone;
+		// Handle case where ow % is greater than 100
+		if (td->o.zrwa_overwrite_percent > 100)
+			f->zbd_info->ow_blk_interval = 1;
+
 		start_z_idx = zbd_zone_idx(f, f->file_offset);
-		nr_zones = zbd_zone_idx(f, f->file_offset + f->io_size) - start_z_idx;
+		nr_zones = zbd_zone_idx(f, f->io_size) - start_z_idx;
 		total_ow = nr_zones * ow_blks_per_zone * td->o.bs[1];
 		td->o.zrwa_divisor = get_divisor(td->o.zrwa_overwrite_percent);
-		log_err("zbd_init: Overwrites per zone = %lld, total ow bytes = %lld, nr_zones = %d mod = %u\n",
-								ow_blks_per_zone, total_ow, nr_zones, td->o.zrwa_divisor);
+		dprint(FD_ZBD, "zbd_init: Overwrites per zone = %lld, total ow bytes = %lld, nr_zones = %d,  overwrites every %u blocks\n",
+						ow_blks_per_zone, total_ow, nr_zones, f->zbd_info->ow_blk_interval);
 		if (!td->o.timeout)
 			td->o.io_size += total_ow;
 		f->zbd_info->ow_blk_count = ow_blks_per_zone;
-		f->zbd_info->ow_count = ow_blks_per_zone;
-		log_err("zbd_init: new io_size with overwrites = %lld, ow-count-in-blks-per-zone = %u \n",
-							td->o.io_size, f->zbd_info->ow_count);
+		dprint(FD_ZBD, "zbd_init: new io_size with overwrites = %lld, ow-count-in-blks-per-zone = %u \n",
+							td->o.io_size, f->zbd_info->ow_blk_count);
 	}
 
 	return 0;
@@ -1340,7 +1345,7 @@ int zbd_finish_full_zone(struct fio_zone_info *z, const struct io_u *io_u)
 	if (ret < 0)
 	    perror("Issuing finish failed with: ");
 	if (g_ow)
-		f->zbd_info->ow_count = f->zbd_info->ow_blk_count;
+		z->ow_count = 0;
 
 	for (i = 0; i < f->zbd_info->num_open_zones; i++)
 		if (f->zbd_info->open_zones[i] == zone_idx)
@@ -1388,8 +1393,7 @@ static void zbd_queue_io(struct io_u *io_u, int q, bool success)
 	if (!success)
 		goto unlock;
 
-	dprint(FD_ZBD,
-		"%s: queued I/O (%lld, %llu) for zone %u\n",
+	dprint(FD_ZBD, "%s: queued I/O (%lld, %llu) for zone %u\n",
 		f->file_name, io_u->offset, io_u->buflen, zone_idx);
 
 	switch (io_u->ddir) {
@@ -1443,8 +1447,7 @@ static void zbd_put_io(const struct io_u *io_u)
 	if (z->type != BLK_ZONE_TYPE_SEQWRITE_REQ)
 		return;
 
-	dprint(FD_ZBD,
-		"%s: terminate I/O (%lld, %llu) for zone %u\n",
+	dprint(FD_ZBD, "%s: terminate I/O (%lld, %llu) for zone %u\n",
 		f->file_name, io_u->offset, io_u->buflen, zone_idx);
 
         // If bs < commit_gran, if completed IO address is a multiple of commit gran,
@@ -1562,8 +1565,6 @@ enum io_u_action zbd_adjust_block(struct thread_data *td, struct io_u *io_u)
 	uint64_t new_len;
 	static uint64_t prev_ow_lba;
 	int64_t range;
-	static int seed = 15;
-
 
 	if (!f->zbd_info)
 		return io_u_accept;
@@ -1728,24 +1729,40 @@ enum io_u_action zbd_adjust_block(struct thread_data *td, struct io_u *io_u)
 		// is greater zone start + buflen, so that the IO are not
 		// sent to previous zone.
 		if (td->o.zrwa_overwrite_percent) {
-			// Issue write to a zone until ow_count reaches 0.
-			// During finishing a zone reset ow_count to ow_blk_count
-			if (f->zbd_info->ow_count &&
-				(io_u->offset >= zb->start + io_u->buflen)) {
-				srand(time(NULL) + seed);
-				if (!(rand() % td->o.zrwa_divisor)) {
-					if (prev_ow_lba != (io_u->offset - io_u->buflen)) {
-						io_u->offset -= io_u->buflen;
-						prev_ow_lba = io_u->offset;
-						f->zbd_info->ow_count--;
-						td->ts.zrwa_overwrite_bytes += io_u->buflen;
-						dprint(FD_ZBD,"Issuing overwrite io at offset %llu\n",
-										io_u->offset);
+		       // Issue write to a zone until ow_count reaches f->zbd_info->ow_blk_count
+		       // During finishing a zone, reset ow_count 0
+		       if (zb->ow_count < f->zbd_info->ow_blk_count &&
+				       (io_u->offset >= zb->start + io_u->buflen)) {
+			       if (td->o.zrwa_rand_ow) {
+				       srand(time(NULL));
+				       if (!(rand() % td->o.zrwa_divisor)) {
+					       if (prev_ow_lba != (io_u->offset - io_u->buflen)) {
+						       io_u->offset -= io_u->buflen;
+						       prev_ow_lba = io_u->offset;
+						       zb->ow_count++;
+						       td->ts.zrwa_overwrite_bytes += io_u->buflen;
+						       dprint(FD_ZBD,"Issuing overwrite io to offset %llu\n",
+											       io_u->offset);
+					       }
+				       }
+			       } else {
+				       // Issue overwrite uniformly after every x IOs.
+				       // where x is total-blocks-in-zone / number-of-blks-to-be-overwritten
+				       // track prev_ow_lba to avoid sendinf ow to same lba again
+				       if (!(((io_u->offset - zb->start) / td->o.bs[1]) % f->zbd_info->ow_blk_interval)) {
+					       if (prev_ow_lba != (io_u->offset - io_u->buflen)) {
+						       io_u->offset -= io_u->buflen;
+						       prev_ow_lba = io_u->offset;
+						       td->ts.zrwa_overwrite_bytes += io_u->buflen;
+						       zb->ow_count++;
+						       dprint(FD_ZBD,"Issuing overwrite io at offset %llu, zb->start= %lu, ow_count = %d\n",
+								       io_u->offset, zb->start, zb->ow_count);
+					       }
 					}
 				}
-				seed++;
 			}
 		}
+
 		if (!is_valid_offset(f, io_u->offset)) {
 			dprint(FD_ZBD, "Dropped request with offset %llu\n",
 			       io_u->offset);

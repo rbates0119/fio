@@ -49,6 +49,7 @@ struct fio_zone_info {
 	uint64_t		wp;
 	uint64_t		capacity;
 	uint32_t		verify_block;
+	uint32_t                ow_count;
 	enum blk_zone_type	type:2;
 	enum blk_zone_cond	cond:4;
 	unsigned int		open:1;
@@ -88,8 +89,8 @@ struct zoned_block_device_info {
 	uint32_t		num_open_zones;
 	uint32_t		write_cnt;
 	uint32_t		open_zones[FIO_MAX_OPEN_ZBD_ZONES];
-	uint32_t                ow_count; // current pending overwrites to zone
 	uint32_t		ow_blk_count; // overwrites to be done in blocks per zone
+	uint32_t                ow_blk_interval; // interval between overwrites
 	struct fio_zone_info	zone_info[0];
 };
 
