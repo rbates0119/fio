@@ -546,6 +546,30 @@ int td_io_open_file(struct thread_data *td, struct fio_file *f)
 		}
 	}
 #endif
+#ifdef FIO_HAVE_STREAMID
+	if (fio_option_is_set(&td->o, stream_id) &&
+	    (f->filetype == FIO_TYPE_BLOCK || f->filetype == FIO_TYPE_FILE)) {
+		uint64_t stream_id = td->o.stream_id;
+		int cmd;
+
+		/*
+		 * For direct IO, we just need/want to set the stream id on
+		 * the file descriptor. For buffered IO, we need to set
+		 * it on the inode.
+		 */
+		if (td->o.odirect) {
+			dprint(FD_STREAMS, "td_io_open_file: set file stream id\n");
+			cmd = F_SET_FILE_STREAM_ID;
+		} else {
+			dprint(FD_STREAMS, "td_io_open_file: set inode stream id\n");
+			cmd = F_SET_STREAM_ID;
+		}
+		if (fcntl(f->fd, cmd, &stream_id) < 0) {
+			td_verror(td, errno, "fcntl stream id");
+			goto err;
+		}
+	}
+#endif
 
 	if (td->o.odirect && !OS_O_DIRECT && fio_set_directio(td, f))
 		goto err;
