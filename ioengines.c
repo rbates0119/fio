@@ -559,10 +559,8 @@ int td_io_open_file(struct thread_data *td, struct fio_file *f)
 		 * it on the inode.
 		 */
 		if (td->o.odirect) {
-			dprint(FD_STREAMS, "td_io_open_file: set file stream id\n");
 			cmd = F_SET_FILE_STREAM_ID;
 		} else {
-			dprint(FD_STREAMS, "td_io_open_file: set inode stream id\n");
 			cmd = F_SET_STREAM_ID;
 		}
 		if (fcntl(f->fd, cmd, &stream_id) < 0) {
