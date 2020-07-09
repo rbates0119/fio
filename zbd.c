@@ -765,6 +765,7 @@ static int zbd_reset_range(struct thread_data *td, const struct fio_file *f,
 		pthread_mutex_unlock(&f->zbd_info->mutex);
 		z->wp = z->start;
 		z->verify_block = 0;
+		z->cond = BLK_ZONE_COND_EMPTY;
 		pthread_mutex_unlock(&z->mutex);
 	}
 
@@ -1021,7 +1022,7 @@ static bool zbd_issue_commit_zone(const struct fio_file *f, uint32_t zone_idx, u
 	dprint(FD_ZBD, "Issuing commit_zone to zone %d, slba %lu, nsid %d, lba = %lu\n", zone_idx,
 						slba, g_nsid, lba);
 	ret = ioctl(f->fd, NVME_IOCTL_IO_CMD, &cmd);
-	if (ret < 0) {
+	if (ret > 0) {
 		perror("ioctl returned:");
 		return false;
 	}
@@ -1053,10 +1054,11 @@ bool zbd_issue_exp_open_zrwa(const struct fio_file *f, uint32_t zone_idx,
 	dprint(FD_ZBD, "Issuing Exp-Open to zone %d, slba %ld, nsid %d\n", zone_idx,
 						slba, nsid);
 	ret = ioctl(f->fd, NVME_IOCTL_IO_CMD, &cmd);
-	if (ret < 0) {
+	if (ret > 0) {
 		perror("ioctl returned:");
 		return false;
 	}
+	z->cond = BLK_ZONE_COND_EXP_OPEN;
 	return true;
 }
 
@@ -1088,6 +1090,10 @@ static bool zbd_open_zone(struct thread_data *td, const struct io_u *io_u,
 	if (!td->o.max_open_zones)
 		return true;
 
+	if (td_random(td) &&
+		f->zbd_info->num_open_zones >= td->o.max_open_zones)
+		return false;
+
 	pthread_mutex_lock(&f->zbd_info->mutex);
 	if (is_zone_open(td, f, zone_idx))
 		goto out;
@@ -1096,12 +1102,16 @@ static bool zbd_open_zone(struct thread_data *td, const struct io_u *io_u,
 		goto out;
 	dprint(FD_ZBD, "%s: opening zone %d%s\n", f->file_name, zone_idx,
 					td->o.zrwa_alloc ? " with ZRWA": "");
-	f->zbd_info->open_zones[f->zbd_info->num_open_zones++] = zone_idx;
 	// Issue an explicit open with ZRWAA bit set via io-passtrhu.
 	if (td->o.zrwa_alloc) {
-		if(!zbd_issue_exp_open_zrwa(f, zone_idx, td->o.ns_id))
-			goto out;
-	}
+		if (z->cond == BLK_ZONE_COND_EMPTY) {
+			if(!zbd_issue_exp_open_zrwa(f, zone_idx, td->o.ns_id))
+				goto out;
+		}
+	} else
+		z->cond = BLK_ZONE_COND_IMP_OPEN;
+
+	f->zbd_info->open_zones[f->zbd_info->num_open_zones++] = zone_idx;
 	z->open = 1;
 	res = true;
 
@@ -1115,14 +1125,28 @@ static void zbd_close_zone(struct thread_data *td, const struct fio_file *f,
 			   unsigned int open_zone_idx)
 {
 	uint32_t zone_idx;
+	struct fio_zone_info *z;
 
 	assert(open_zone_idx < f->zbd_info->num_open_zones);
 	zone_idx = f->zbd_info->open_zones[open_zone_idx];
-	if (td->o.max_open_zones && td->o.issue_zone_finish) {
+	z = &f->zbd_info->zone_info[zone_idx];
+	if (td->o.max_open_zones && td->o.issue_zone_finish && td->o.zrwa_alloc) {
 		io_u_quiesce(td);
+		// Handle the case where fio is started and all zones in the range
+		// are in full state. fio MO is to select a zone, open it, if it is
+		// full then close it (this func), select next zone and open it and
+		// send it to zbd_adjust_block(), which then checks if the zone is
+		// full and if so resets the zone, and starts writing to it. In case
+		// where all zones are full at start and issue_zone_finish is enabled
+		// fio cannot close a zone properly as zone finish is done in the
+		// IO completion path and IOs have not started in this case, so fio
+		// cannot close the zone here in this func and num_open_zones is not
+		// decremented so it cannot open a new zone.
+		if (z->cond == BLK_ZONE_COND_FULL && z->open)
+			goto close;
 		return;
 	}
-
+close:
 	memmove(f->zbd_info->open_zones + open_zone_idx,
 		f->zbd_info->open_zones + open_zone_idx + 1,
 		(FIO_MAX_OPEN_ZBD_ZONES - (open_zone_idx + 1)) *
@@ -1346,6 +1370,8 @@ int zbd_finish_full_zone(struct fio_zone_info *z, const struct io_u *io_u)
 	    perror("Issuing finish failed with: ");
 	if (g_ow)
 		z->ow_count = 0;
+
+	z->cond = BLK_ZONE_COND_FULL;
 
 	for (i = 0; i < f->zbd_info->num_open_zones; i++)
 		if (f->zbd_info->open_zones[i] == zone_idx)
@@ -1728,7 +1754,7 @@ enum io_u_action zbd_adjust_block(struct thread_data *td, struct io_u *io_u)
 		// written location, which is wp - buflen, ensure the offset
 		// is greater zone start + buflen, so that the IO are not
 		// sent to previous zone.
-		if (td->o.zrwa_overwrite_percent) {
+		if (td->o.zrwa_overwrite_percent && td->o.zrwa_alloc) {
 		       // Issue write to a zone until ow_count reaches f->zbd_info->ow_blk_count
 		       // During finishing a zone, reset ow_count 0
 		       if (zb->ow_count < f->zbd_info->ow_blk_count &&
