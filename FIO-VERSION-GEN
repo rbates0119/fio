@@ -5,6 +5,7 @@ DEF_VER=fio-3.19
 
 LF='
 '
+GIT_HASH_SHORT=`git rev-parse --short HEAD`
 
 # First see if there is a version file (included in release tarballs),
 # then try git-describe, then default.
@@ -27,6 +28,7 @@ else
 fi
 
 VN=`expr "$VN" : v*'\(.*\)'`
+VN=$VN-$GIT_HASH_SHORT
 
 if test -r $GVF
 then
