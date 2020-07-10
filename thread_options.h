@@ -343,6 +343,8 @@ struct thread_options {
 	unsigned int read_beyond_wp;
 	int max_open_zones;
 	bool issue_zone_finish;
+	bool reset_zones_first;
+	bool fill_empty_zones_first;
 	uint32_t ns_id;
 	uint32_t commit_gran;
 	uint32_t exp_commit;
@@ -350,9 +352,12 @@ struct thread_options {
 	uint32_t zrwa_overwrite_percent;
 	uint32_t zrwa_divisor;
 	uint32_t zrwa_rand_ow;
+	uint32_t finish_zone_pct;
 	fio_fp64_t zrt;
 	fio_fp64_t zrf;
 };
+
+
 
 #define FIO_TOP_STR_MAX		256
 
