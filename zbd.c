@@ -994,6 +994,7 @@ void zbd_file_reset(struct thread_data *td, struct fio_file *f)
 
 	if (td->o.reset_zones_first && (f->fd != -1)) {
 		dprint(FD_ZBD, "zbd_file_reset: reset zones \n");
+		td->o.reset_zones_first = 0;
 		zbd_reset_zones(td, f, zb, ze, true);
 	} else {
 
