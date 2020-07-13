@@ -291,7 +291,7 @@ static int fio_libaio_commit(struct thread_data *td)
 		iocbs = ld->iocbs + ld->tail;
 
 #ifdef FIO_HAVE_STREAMID
-		dprint(FD_STREAMS, "stream_id = %ld \n", stream);
+		dprint(FD_STREAMS, "fio_libaio_commit: stream_id = %ld \n", stream);
 
 		if (posix_fadvise(td->fd, stream, STREAM_F_INODE | STREAM_F_FILE, POSIX_FADV_STREAM_ASSIGN) < 0) {
 			td_verror(td, errno, "stream_id");
