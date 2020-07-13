@@ -308,7 +308,9 @@ static int fio_ioring_cqring_reap(struct thread_data *td, unsigned int events,
 		head++;
 	} while (reaped + events < max);
 
-	atomic_store_release(ring->head, head);
+	if (reaped)
+		atomic_store_release(ring->head, head);
+
 	return reaped;
 }
 
