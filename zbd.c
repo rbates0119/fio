@@ -405,8 +405,81 @@ static int init_zone_info(struct thread_data *td, struct fio_file *f)
 	return 0;
 }
 
+bool zbd_identify_ns(struct thread_data *td, int fd, void *ns, void *ns_zns)
+{
+	int ret;
+	struct nvme_passthru_cmd cmd;
+	memset(&cmd, 0, sizeof(cmd));
+
+	cmd.opcode     = 6;				//nvme_admin_identify
+	cmd.nsid       = td->o.ns_id;
+	cmd.cdw10      = 5;
+	cmd.cdw11      = 0;
+	cmd.addr       = (__u64)(uintptr_t)ns;
+	cmd.data_len   = 4096; //sizeof(struct nvme_id_ns_zns);
+
+//	dprint(FD_ZBD, "Issuing id_ns, nsid %d, %d, %d, 0x%x\n", cmd.nsid, cmd.opcode, cmd.cdw10, cmd.cdw11);
+	ret = ioctl(fd, NVME_IOCTL_ADMIN_CMD, &cmd);
+	if (ret > 0) {
+		perror("ioctl returned:");
+		return false;
+	}
+	cmd.cdw11      = 2 << 24;
+	cmd.addr       = (__u64)(uintptr_t)ns_zns;
+	ret = ioctl(fd, NVME_IOCTL_ADMIN_CMD, &cmd);
+	if (ret > 0) {
+		perror("ioctl returned:");
+		return false;
+	}
+
+	return true;
+}
+
+int zbd_get_nsid(int fd)
+{
+	static struct stat nvme_stat;
+	int err = fstat(fd, &nvme_stat);
+
+	if (err < 0)
+		return -errno;
+
+	if (!S_ISBLK(nvme_stat.st_mode)) {
+		log_err("Error: requesting namespace-id from non-block device\n");
+		errno = ENOTBLK;
+		return -errno;
+	}
+	return ioctl(fd, NVME_IOCTL_ID);
+}
+
+bool zbd_verify_scheduler(const char *file_name, const char *scheduler) {
+
+	char *dev;
+//	char dev_name[5]= {110, 118, 109, 101};
+	char path[40];
+	char *scheduler_str;
+	bool correct = false;
+
+	dev = strstr(file_name, "nvme");
+
+	if (dev != NULL) {
+
+		sprintf(path, "/sys/block/%s/queue/scheduler", dev);
+		scheduler_str = read_file(path);
+		if (scheduler_str != NULL) {
+			dprint(FD_ZBD, "zbd_verify_scheduler:  %s, %s, %s\n", scheduler, scheduler_str, path);
+			correct =  (strstr(scheduler_str, scheduler) != NULL);
+			if (!correct) {
+				log_err("fio: %s not using correct scheduler. %s\n", file_name, scheduler_str);
+			}
+		}
+	}
+
+	return correct;
+}
+
 /*
- * Parse the BLKREPORTZONE output and store it in f->zbd_info. Must be called
+ * Parse the BLKREPORTZONE output and store it in f->zbd_info and
+ * get namespace data to verify options are ok. Must be called
  * only for devices that support this ioctl, namely zoned block devices.
  */
 static int parse_zone_info(struct thread_data *td, struct fio_file *f)
@@ -419,9 +492,12 @@ static int parse_zone_info(struct thread_data *td, struct fio_file *f)
 	struct fio_zone_info *p;
 	uint64_t zone_size, start_sector;
 	struct zoned_block_device_info *zbd_info = NULL;
+	struct nvme_id_ns_zns *ns_zns = NULL;
+	struct nvme_id_ns *ns = NULL;
 	pthread_mutexattr_t attr;
 	void *buf;
-	int fd, i, j, ret = 0;
+	int fd, i, j, ns_id, bs, ret = 0;
+	char scheduler[15];
 
 	pthread_mutexattr_init(&attr);
 	pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE);
@@ -449,8 +525,72 @@ static int parse_zone_info(struct thread_data *td, struct fio_file *f)
 			 f->file_name);
 		goto close;
 	}
+	ns_zns = malloc(4096);
+	if (!ns_zns)
+		goto out;
+	ns = malloc(4096);
+	if (!ns)
+		goto out;
+
+	if (td->o.zone_mode == ZONE_MODE_ZBD) {
+		if (td->o.zrwa_alloc) {
+			if (zbd_identify_ns(td, fd, ns, ns_zns)) {
+				dprint(FD_ZBD, "parse_zone_info: zrwas = %d mar = %d \n", le16_to_cpu(ns_zns->zrwas), le32_to_cpu(ns_zns->mar));
+				if (td->o.max_open_zones > (ns_zns->mar + 1))
+				{
+					log_err("fio: %s job parameter max_open_zones %u is greater than maximum active resources %llu (zero based).\n",
+						f->file_name, td->o.max_open_zones, (unsigned long long)ns_zns->mar);
+					ret = -EINVAL;
+					goto close;
+				}
+				if (!td->o.issue_zone_finish)
+				{
+					log_err("fio: %s job parameter issue_zone_finish not set. Must be set if zrwa_alloc is set\n",
+						f->file_name);
+					ret = -EINVAL;
+					goto close;
+				}
+				bs = 4096;
+				for (i = 0; i <= ns->nlbaf; i++) {
+
+					if (ns->flbas & 0xf)
+						bs = ns->lbaf[i].ds;
+				}
+				if ((ns_zns->zrwas * bs) <  (td->o.bs[1] * td->o.iodepth)) {
+					log_err("fio: %s iodepth = %d * blocksize = %lld (%lld) is greater than zrwas = %d \n",
+						f->file_name, td->o.iodepth, td->o.bs[1], (td->o.iodepth * td->o.bs[1]), (ns_zns->zrwas * bs));
+					ret = -EINVAL;
+					goto close;
+				}
+				sprintf(scheduler, "[none]");
+				if (!zbd_verify_scheduler(f->file_name, scheduler)) {
+					goto close;
+				}
+			}
+		} else {
+			sprintf(scheduler, "[mq-deadline]");
+			if (!zbd_verify_scheduler(f->file_name, scheduler)) {
+				goto close;
+			}
+		}
+	}
+
+	if (td->o.ns_id > 0) {
+		ns_id = zbd_get_nsid(fd);
+		if (ns_id > 0)
+		{
+			if (ns_id != td->o.ns_id) {
+				log_err("fio: %s job parameter ns_id = %u does not match device ns = %u.\n",
+					f->file_name, td->o.ns_id, ns_id);
+				ret = -EINVAL;
+				goto close;
+			}
+		}
+	}
+
 	z = (void *)(hdr + 1);
 	zone_size = z->len << 9;
+	dprint(FD_ZBD, "parse_zone_info: zone_size = 0x%llX z->len = 0x%llX \n", (unsigned long long)zone_size, (unsigned long long)z->len);
 	nr_zones = (f->real_file_size + zone_size - 1) / zone_size;
 
 	if (td->o.zone_size == 0) {
@@ -544,6 +684,8 @@ close:
 	close(fd);
 free:
 	free(buf);
+	free(ns_zns);
+	free(ns);
 out:
 	pthread_mutexattr_destroy(&attr);
 	return ret;

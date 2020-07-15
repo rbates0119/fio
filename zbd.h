@@ -94,6 +94,77 @@ struct zoned_block_device_info {
 	struct fio_zone_info	zone_info[0];
 };
 
+struct nvme_lbaf {
+	uint16_t			ms;
+	uint8_t			ds;
+	uint8_t			rp;
+};
+
+struct nvme_id_ns {
+	uint64_t			nsze;
+	uint64_t			ncap;
+	uint64_t			nuse;
+	uint8_t			nsfeat;
+	uint8_t			nlbaf;
+	uint8_t			flbas;
+	uint8_t			mc;
+	uint8_t			dpc;
+	uint8_t			dps;
+	uint8_t			nmic;
+	uint8_t			rescap;
+	uint8_t			fpi;
+	uint8_t			dlfeat;
+	uint16_t			nawun;
+	uint16_t			nawupf;
+	uint16_t			nacwu;
+	uint16_t			nabsn;
+	uint16_t			nabo;
+	uint16_t			nabspf;
+	uint16_t			noiob;
+	uint8_t				nvmcap[16];
+	uint16_t			npwg;
+	uint16_t			npwa;
+	uint16_t			npdg;
+	uint16_t			npda;
+	uint16_t			nows;
+	uint8_t				rsvd74[18];
+	uint32_t			anagrpid;
+	uint8_t				rsvd96[3];
+	uint8_t				nsattr;
+	uint16_t			nvmsetid;
+	uint16_t			endgid;
+	uint8_t				nguid[16];
+	uint8_t				eui64[8];
+	struct nvme_lbaf	lbaf[16];
+	uint8_t				rsvd192[192];
+	uint8_t				vs[3712];
+};
+
+struct nvme_zns_lbafe {
+	uint64_t			zsze;
+	uint8_t			zdes;
+	uint8_t			rsvd9[7];
+};
+
+struct nvme_id_ns_zns {
+	uint16_t			zoc;
+	uint16_t			ozcs;
+	uint32_t			mar;
+	uint32_t			mor;
+	uint32_t			rrl;
+	uint32_t			frl;
+	uint8_t				rsvd20[20];
+	uint16_t			zrwas;
+	uint32_t			zrwacg;
+	uint32_t			micws;
+	uint8_t	 			rsvd50[2766];
+	struct nvme_zns_lbafe	lbafe[16];
+	uint8_t				rsvd3072[768];
+	uint8_t 			vs[256];
+} __attribute__((packed));
+
+#define NVME_IOCTL_ADMIN_CMD	_IOWR('N', 0x41, struct nvme_admin_cmd)
+
 #ifdef CONFIG_LINUX_BLKZONED
 void zbd_free_zone_info(struct fio_file *f);
 int zbd_init(struct thread_data *td);
