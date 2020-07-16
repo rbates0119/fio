@@ -633,7 +633,7 @@ static int parse_zone_info(struct thread_data *td, struct fio_file *f)
 				assert(z->start <= z->wp);
 				assert(z->wp <= z->start + (zone_size >> 9));
 				p->wp = z->wp << 9;
-				if (td->o.max_open_zones > 0) {
+				if ((td->o.max_open_zones > 0) && !td->o.reset_zones_first) {
 					zbd_info->open_zones[zbd_info->num_open_zones++] = j;
 					p->open = 1;
 					assert(zbd_info->num_open_zones <= td->o.max_open_zones);
