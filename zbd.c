@@ -1579,14 +1579,18 @@ int zbd_finish_full_zone(struct fio_zone_info *z, const struct io_u *io_u)
 				if (f->zbd_info->open_zones[i] == zone_idx)
 					open_zone_idx = i;
 
-			assert(open_zone_idx < f->zbd_info->num_open_zones);
+			/* check if zone was already closed */
+			if (open_zone_idx != -1) {
 
-			memmove(f->zbd_info->open_zones + open_zone_idx,
-				f->zbd_info->open_zones + open_zone_idx + 1,
-				(FIO_MAX_OPEN_ZBD_ZONES - (open_zone_idx + 1)) *
-				sizeof(f->zbd_info->open_zones[0]));
-			f->zbd_info->num_open_zones--;
-			f->zbd_info->zone_info[zone_idx].open = 0;
+				assert(open_zone_idx < f->zbd_info->num_open_zones);
+
+				memmove(f->zbd_info->open_zones + open_zone_idx,
+					f->zbd_info->open_zones + open_zone_idx + 1,
+					(FIO_MAX_OPEN_ZBD_ZONES - (open_zone_idx + 1)) *
+					sizeof(f->zbd_info->open_zones[0]));
+				f->zbd_info->num_open_zones--;
+				f->zbd_info->zone_info[zone_idx].open = 0;
+			}
 		}
     }
     return ret;
