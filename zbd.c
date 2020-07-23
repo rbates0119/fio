@@ -1381,7 +1381,8 @@ unsigned int zbd_can_zrwa_queue_more(struct thread_data *td, const struct io_u *
 	if (!z->io_q_count)
 		return 1;
 
-	if ((io_u->offset - zbd_get_lowest_queued_offset(z, io_u->offset)) < ZRWA_SIZE_BYTES)
+	if ((io_u->offset + io_u->buflen -
+		zbd_get_lowest_queued_offset(z, io_u->offset)) <= ZRWA_SIZE_BYTES)
 		return 1;
 
 	return 0;
