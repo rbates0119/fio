@@ -116,6 +116,7 @@ struct thread_options {
 	unsigned int pre_read;
 	unsigned int sync_io;
 	unsigned int write_hint;
+	unsigned int stream_id;
 	unsigned int verify;
 	unsigned int do_verify;
 	unsigned int verify_interval;
@@ -633,6 +634,9 @@ struct thread_options_pack {
 	uint32_t allow_mounted_write;
 
 	uint32_t zone_mode;
+
+	uint8_t stream_id;
+
 } __attribute__((packed));
 
 extern void convert_thread_options_to_cpu(struct thread_options *o, struct thread_options_pack *top);

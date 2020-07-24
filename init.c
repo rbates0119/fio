@@ -1518,6 +1518,7 @@ static int add_job(struct thread_data *td, const char *jobname, int job_add_num,
 	}
 	td->ts.sync_stat.min_val = ULONG_MAX;
 	td->ddir_seq_nr = o->ddir_seq_nr;
+	td->stream_id = o->stream_id;
 
 	if ((o->stonewall || o->new_group) && prev_group_jobs) {
 		prev_group_jobs = 0;
@@ -1741,6 +1742,7 @@ static int add_job(struct thread_data *td, const char *jobname, int job_add_num,
 		td_new->subjob_number = numjobs;
 		td_new->o.ss_dur = o->ss_dur * 1000000l;
 		td_new->o.ss_limit = o->ss_limit;
+		td_new->stream_id = (int)o->stream_id;
 
 		if (file_alloced) {
 			if (td_new->files) {
@@ -2293,6 +2295,10 @@ const struct debug_level debug_levels[] = {
 	{ .name = "zbd",
 	  .help = "Zoned Block Device logging",
 	  .shift = FD_ZBD,
+	},
+	{ .name = "streams",
+	  .help = "Write streams logging",
+	  .shift = FD_STREAMS,
 	},
 	{ .name = NULL, },
 };
