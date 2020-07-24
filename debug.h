@@ -24,6 +24,7 @@ enum {
 	FD_HELPERTHREAD,
 	FD_ZBD,
 	FD_DEBUG_MAX,
+	FD_STREAMS,
 };
 
 extern unsigned int fio_debug_jobno, *fio_debug_jobp, *fio_warned;
