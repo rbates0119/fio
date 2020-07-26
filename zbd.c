@@ -65,8 +65,8 @@ static bool zbd_zone_full(const struct fio_file *f, struct fio_zone_info *z,
 	bool full = false;
 
 	assert((required & 511) == 0);
-	full = (z->type == BLK_ZONE_TYPE_SEQWRITE_REQ) &&
-		(z->wp + required > z->start + z->capacity);
+	full = ((z->type == BLK_ZONE_TYPE_SEQWRITE_REQ) &&
+		(z->wp + required > z->start + z->capacity)) || z->cond == BLK_ZONE_COND_FULL;
 	if (full) z->cond = BLK_ZONE_COND_FULL;
 
 	return  full;
@@ -1273,7 +1273,7 @@ static bool zbd_open_zone(struct thread_data *td, const struct io_u *io_u,
 	struct fio_zone_info *z = &f->zbd_info->zone_info[zone_idx];
 	bool res = true;
 
-	if (z->cond == BLK_ZONE_COND_OFFLINE)
+	if ((z->cond == BLK_ZONE_COND_OFFLINE) || (z->cond == BLK_ZONE_COND_FULL))
 		return false;
 
 	/*
@@ -1584,21 +1584,20 @@ int zbd_finish_full_zone(struct fio_zone_info *z, const struct io_u *io_u)
 
     if (g_finish_zone) {
 		zone_idx = zbd_zone_idx(f, io_u->offset);
+
 		if (g_finish_zone_pct == 0)
 		{
-			dprint(FD_ZBD, "%s(%s): Issuing BLKFINISHZONE on zone %d pct = %1d\n", __func__,
-					f->file_name, zone_idx, g_finish_zone_pct);
-			finish_limit = (io_u->offset + io_u->buflen);
+			finish_limit = z->capacity;
 		} else {
-			finish_limit = (((io_u->offset + io_u->buflen) * g_finish_zone_pct) / 100);
+			finish_limit = (z->capacity * g_finish_zone_pct) / 100;
 		}
-		if ((z->start + z->capacity <= io_u->offset + io_u->buflen) &&
-		   ((z->start + z->capacity) >= finish_limit)) {
+		if (((io_u->offset + io_u->buflen) >= (z->start + finish_limit)) &&
+				((io_u->offset + io_u->buflen) <= (z->start + z->capacity))) {
 			z->cond = BLK_ZONE_COND_FULL;
 			zr.sector = z->start >> 9;
 			zr.nr_sectors =  f->zbd_info->zone_size >> 9;
 			dprint(FD_ZBD, "%s(%s): Issuing BLKFINISHZONE on zone %d at %ld of %ld, pct = %1d\n", __func__,
-					f->file_name, zone_idx, (z->start + z->capacity),finish_limit, g_finish_zone_pct);
+					f->file_name, zone_idx, (z->start + finish_limit), (z->start + z->capacity), g_finish_zone_pct);
 			ret = ioctl(f->fd, BLKFINISHZONE, &zr);
 			if (ret < 0)
 				perror("Issuing finish failed with: ");
