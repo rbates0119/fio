@@ -30,7 +30,8 @@ static unsigned long long g_commit_gran;
 static int g_exp_commit;
 static int g_ow;
 static int g_finish_zone_pct;
-
+static unsigned int g_max_open_zones;
+static bool g_init_done = false;
 
 /**
  * zbd_zone_idx - convert an offset into a zone number
@@ -418,7 +419,6 @@ bool zbd_identify_ns(struct thread_data *td, int fd, void *ns, void *ns_zns)
 	cmd.addr       = (__u64)(uintptr_t)ns;
 	cmd.data_len   = 4096; //sizeof(struct nvme_id_ns_zns);
 
-//	dprint(FD_ZBD, "Issuing id_ns, nsid %d, %d, %d, 0x%x\n", cmd.nsid, cmd.opcode, cmd.cdw10, cmd.cdw11);
 	ret = ioctl(fd, NVME_IOCTL_ADMIN_CMD, &cmd);
 	if (ret > 0) {
 		perror("ioctl returned:");
@@ -432,7 +432,7 @@ bool zbd_identify_ns(struct thread_data *td, int fd, void *ns, void *ns_zns)
 		return false;
 	}
 
-	return true;
+	return false;
 }
 
 int zbd_get_nsid(int fd)
@@ -454,7 +454,6 @@ int zbd_get_nsid(int fd)
 bool zbd_verify_scheduler(const char *file_name, const char *scheduler) {
 
 	char *dev;
-//	char dev_name[5]= {110, 118, 109, 101};
 	char path[40];
 	char *scheduler_str;
 	bool correct = false;
@@ -492,20 +491,30 @@ static int parse_zone_info(struct thread_data *td, struct fio_file *f)
 	struct fio_zone_info *p;
 	uint64_t zone_size, start_sector;
 	struct zoned_block_device_info *zbd_info = NULL;
-	struct nvme_id_ns_zns *ns_zns = NULL;
+	struct nvme_id_ns_zns_2 *ns_zns = NULL;
 	struct nvme_id_ns *ns = NULL;
 	pthread_mutexattr_t attr;
 	void *buf;
 	int fd, i, j, ns_id, bs, ret = 0;
 	char scheduler[15];
+	struct thread_data *td2;
+	uint32_t mar;
 
 	pthread_mutexattr_init(&attr);
 	pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE);
 	pthread_mutexattr_setpshared(&attr, true);
 
+	dprint(FD_ZBD, "parse_zone_info 1: id = %d \n", td->thread_number);
+
 	buf = malloc(bufsz);
 	if (!buf)
 		goto out;
+	ns_zns = malloc(4096);
+	if (!ns_zns)
+		goto free_buf;
+	ns = malloc(4096);
+	if (!ns)
+		goto free_ns;
 
 	fd = open(f->file_name, O_RDONLY | O_LARGEFILE);
 	if (fd < 0) {
@@ -525,68 +534,6 @@ static int parse_zone_info(struct thread_data *td, struct fio_file *f)
 			 f->file_name);
 		goto close;
 	}
-	ns_zns = malloc(4096);
-	if (!ns_zns)
-		goto out;
-	ns = malloc(4096);
-	if (!ns)
-		goto out;
-
-	if (td->o.zone_mode == ZONE_MODE_ZBD) {
-		if (td->o.zrwa_alloc) {
-			if (zbd_identify_ns(td, fd, ns, ns_zns)) {
-				dprint(FD_ZBD, "parse_zone_info: zrwas = %d mar = %d \n", le16_to_cpu(ns_zns->zrwas), le32_to_cpu(ns_zns->mar));
-				if (td->o.max_open_zones > (ns_zns->mar + 1))
-				{
-					log_err("fio: %s job parameter max_open_zones %u is greater than maximum active resources %llu (zero based).\n",
-						f->file_name, td->o.max_open_zones, (unsigned long long)ns_zns->mar);
-					ret = -EINVAL;
-					goto close;
-				}
-				if (!td->o.issue_zone_finish)
-				{
-					log_err("fio: %s job parameter issue_zone_finish not set. Must be set if zrwa_alloc is set\n",
-						f->file_name);
-					ret = -EINVAL;
-					goto close;
-				}
-				bs = 4096;
-				for (i = 0; i <= ns->nlbaf; i++) {
-
-					if (ns->flbas & 0xf)
-						bs = ns->lbaf[i].ds;
-				}
-				if ((ns_zns->zrwas * bs) <  (td->o.bs[1] * td->o.iodepth)) {
-					log_err("fio: %s iodepth = %d * blocksize = %lld (%lld) is greater than zrwas = %d \n",
-						f->file_name, td->o.iodepth, td->o.bs[1], (td->o.iodepth * td->o.bs[1]), (ns_zns->zrwas * bs));
-					ret = -EINVAL;
-					goto close;
-				}
-				sprintf(scheduler, "[none]");
-				if (!zbd_verify_scheduler(f->file_name, scheduler)) {
-					goto close;
-				}
-			}
-		} else {
-			sprintf(scheduler, "[mq-deadline]");
-			if (!zbd_verify_scheduler(f->file_name, scheduler)) {
-				goto close;
-			}
-		}
-	}
-
-	if (td->o.ns_id > 0) {
-		ns_id = zbd_get_nsid(fd);
-		if (ns_id > 0)
-		{
-			if (ns_id != td->o.ns_id) {
-				log_err("fio: %s job parameter ns_id = %u does not match device ns = %u.\n",
-					f->file_name, td->o.ns_id, ns_id);
-				ret = -EINVAL;
-				goto close;
-			}
-		}
-	}
 
 	z = (void *)(hdr + 1);
 	zone_size = z->len << 9;
@@ -600,7 +547,7 @@ static int parse_zone_info(struct thread_data *td, struct fio_file *f)
 			f->file_name, (unsigned long long) td->o.zone_size,
 			(unsigned long long) zone_size);
 		ret = -EINVAL;
-		goto close;
+		goto free;
 	}
 
 	dprint(FD_ZBD, "Device %s has %d zones of size %llu KB\n", f->file_name,
@@ -633,10 +580,10 @@ static int parse_zone_info(struct thread_data *td, struct fio_file *f)
 				assert(z->start <= z->wp);
 				assert(z->wp <= z->start + (zone_size >> 9));
 				p->wp = z->wp << 9;
-				if ((td->o.max_open_zones > 0) && !td->o.reset_zones_first) {
+				if ((g_max_open_zones > 0) && !td->o.reset_zones_first) {
 					zbd_info->open_zones[zbd_info->num_open_zones++] = j;
 					p->open = 1;
-					assert(zbd_info->num_open_zones <= td->o.max_open_zones);
+					assert(zbd_info->num_open_zones <= g_max_open_zones);
 				}
 				break;
 			default:
@@ -666,6 +613,80 @@ static int parse_zone_info(struct thread_data *td, struct fio_file *f)
 			goto close;
 		}
 	}
+
+	if (!g_init_done) {
+		i=0;
+		for_each_td(td2, i) {
+
+			g_max_open_zones += td2->o.max_open_zones;
+			dprint(FD_ZBD, "parse_zone_info: id = %d, max_zones = %d \n",
+					td2->thread_number, g_max_open_zones);
+		}
+		g_init_done = true;
+	}
+
+	if (td->o.zrwa_alloc) {
+		if (zbd_identify_ns(td, fd, ns, ns_zns)) {
+			bs = 4096;
+			for (i = 0; i <= ns->nlbaf; i++) {
+
+				if (ns->flbas & 0xf)
+					bs = ns->lbaf[i].ds;
+			}
+			dprint(FD_ZBD, "parse_zone_info: zrwas = %d mar = %d, bs = %d \n", le16_to_cpu(ns_zns->zrwas), le32_to_cpu(ns_zns->mar), bs);
+			if ((ns_zns->zrwas * bs) <  (td->o.bs[1] * td->o.iodepth)) {
+				log_err("fio: %s iodepth = %d * blocksize = %lld (%lld) is greater than zrwas = %d \n",
+					f->file_name, td->o.iodepth, td->o.bs[1], (td->o.iodepth * td->o.bs[1]), (ns_zns->zrwas * bs));
+				ret = -EINVAL;
+				goto close;
+			}
+		} else {
+			mar = 11;
+		}
+		if (ns_zns->mar > 0)
+		{
+			mar = ns_zns->mar;
+		} else {
+			mar = ((struct nvme_id_ns_zns*)ns_zns)->mar;
+		}
+		if (g_max_open_zones > (mar + 1))
+		{
+			log_err("fio: %s job parameter max_open_zones = %u is greater than maximum active resources = %llu (zero based).\n",
+				f->file_name, g_max_open_zones, (unsigned long long)mar);
+			ret = -EINVAL;
+			goto close;
+		}
+		if (!td->o.issue_zone_finish)
+		{
+			log_err("fio: %s job parameter issue_zone_finish not set. Must be set if zrwa_alloc is set\n",
+				f->file_name);
+			ret = -EINVAL;
+			goto close;
+		}
+		sprintf(scheduler, "[none]");
+		if (!zbd_verify_scheduler(f->file_name, scheduler)) {
+			goto close;
+		}
+	} else {
+		sprintf(scheduler, "[mq-deadline]");
+		if (!zbd_verify_scheduler(f->file_name, scheduler)) {
+			goto close;
+		}
+	}
+
+	if (td->o.ns_id > 0) {
+		ns_id = zbd_get_nsid(fd);
+		if (ns_id > 0)
+		{
+			if (ns_id != td->o.ns_id) {
+				log_err("fio: %s job parameter ns_id = %u does not match device ns = %u.\n",
+					f->file_name, td->o.ns_id, ns_id);
+				ret = -EINVAL;
+				goto close;
+			}
+		}
+	}
+
 	/* a sentinel */
 	zbd_info->zone_info[nr_zones].start = start_sector << 9;
 
@@ -683,9 +704,11 @@ close:
 	sfree(zbd_info);
 	close(fd);
 free:
-	free(buf);
-	free(ns_zns);
 	free(ns);
+free_ns:
+	free(ns_zns);
+free_buf:
+	free(buf);
 out:
 	pthread_mutexattr_destroy(&attr);
 	return ret;
@@ -1159,8 +1182,8 @@ static bool is_zone_open(const struct thread_data *td, const struct fio_file *f,
 	struct zoned_block_device_info *zbdi = f->zbd_info;
 	int i;
 
-	assert(td->o.max_open_zones <= ARRAY_SIZE(zbdi->open_zones));
-	assert(zbdi->num_open_zones <= td->o.max_open_zones);
+	assert(g_max_open_zones <= ARRAY_SIZE(zbdi->open_zones));
+	assert(zbdi->num_open_zones <= g_max_open_zones);
 
 	for (i = 0; i < zbdi->num_open_zones; i++)
 		if (zbdi->open_zones[i] == zone_idx)
@@ -1225,7 +1248,7 @@ bool zbd_issue_exp_open_zrwa(const struct fio_file *f, uint32_t zone_idx,
 	cmd.addr       = (__u64)(uintptr_t)NULL;
 	cmd.data_len   = 0;
 
-	dprint(FD_ZBD, "Issuing Exp-Open to zone %d, slba %ld, nsid %d\n", zone_idx,
+	dprint(FD_ZBD, "Issuing Exp-Open to zone %d, slba 0x%lX, nsid %d\n", zone_idx,
 						slba, nsid);
 	ret = ioctl(f->fd, NVME_IOCTL_IO_CMD, &cmd);
 	if (ret > 0) {
@@ -1261,21 +1284,20 @@ static bool zbd_open_zone(struct thread_data *td, const struct io_u *io_u,
 		return false;
 
 	/* Zero means no limit */
-	if (!td->o.max_open_zones)
+	if (!g_max_open_zones)
 		return true;
 
 	if (td_random(td) &&
-		f->zbd_info->num_open_zones >= td->o.max_open_zones)
+		f->zbd_info->num_open_zones >= g_max_open_zones)
 		return false;
 
 	pthread_mutex_lock(&f->zbd_info->mutex);
+
 	if (is_zone_open(td, f, zone_idx))
 		goto out;
 	res = false;
-	if (f->zbd_info->num_open_zones >= td->o.max_open_zones)
+	if (f->zbd_info->num_open_zones >= g_max_open_zones)
 		goto out;
-	dprint(FD_ZBD, "%s: opening zone %d%s\n", f->file_name, zone_idx,
-					td->o.zrwa_alloc ? " with ZRWA": "");
 	// Issue an explicit open with ZRWAA bit set via io-passtrhu.
 	if (td->o.zrwa_alloc) {
 		if (z->cond == BLK_ZONE_COND_EMPTY) {
@@ -1284,6 +1306,8 @@ static bool zbd_open_zone(struct thread_data *td, const struct io_u *io_u,
 		}
 	} else
 		z->cond = BLK_ZONE_COND_IMP_OPEN;
+	dprint(FD_ZBD, "%s: opening zone %d, id = %d, max_zones = %d%s \n",
+			f->file_name, zone_idx, td->thread_number, g_max_open_zones, td->o.zrwa_alloc ? " with ZRWA": "");
 
 	f->zbd_info->open_zones[f->zbd_info->num_open_zones++] = zone_idx;
 	z->open = 1;
@@ -1304,7 +1328,7 @@ static void zbd_close_zone(struct thread_data *td, const struct fio_file *f,
 	assert(open_zone_idx < f->zbd_info->num_open_zones);
 	zone_idx = f->zbd_info->open_zones[open_zone_idx];
 	z = &f->zbd_info->zone_info[zone_idx];
-	if (td->o.max_open_zones && td->o.issue_zone_finish &&
+	if (g_max_open_zones && td->o.issue_zone_finish &&
 			(td->o.zrwa_alloc || (td->o.finish_zone_pct < 100))) {
 		io_u_quiesce(td);
 		// Handle the case where fio is started and all zones in the range
@@ -1354,7 +1378,7 @@ static struct fio_zone_info *zbd_convert_to_open_zone(struct thread_data *td,
 
 	assert(is_valid_offset(f, io_u->offset));
 
-	if (td->o.max_open_zones) {
+	if (g_max_open_zones) {
 		/*
 		 * This statement accesses f->zbd_info->open_zones[] on purpose
 		 * without locking.
@@ -1365,8 +1389,8 @@ static struct fio_zone_info *zbd_convert_to_open_zone(struct thread_data *td,
 	} else {
 		zone_idx = zbd_zone_idx(f, io_u->offset);
 	}
-	dprint(FD_ZBD, "%s(%s): starting from zone %d (offset %lld, buflen %lld)\n",
-	       __func__, f->file_name, zone_idx, io_u->offset, io_u->buflen);
+//	dprint(FD_ZBD, "%s(%s): starting from zone %d id = %d, zones = %d (offset 0x%llX, buflen %lld)\n",
+//	       __func__, f->file_name, zone_idx, td->thread_number, f->zbd_info->num_open_zones, (io_u->offset/4096), io_u->buflen);
 
 	/*
 	 * Since z->mutex is the outer lock and f->zbd_info->mutex the inner
@@ -1377,9 +1401,13 @@ static struct fio_zone_info *zbd_convert_to_open_zone(struct thread_data *td,
 	for (;;) {
 		z = &f->zbd_info->zone_info[zone_idx];
 
-		pthread_mutex_lock(&z->mutex);
+		if (pthread_mutex_trylock(&z->mutex) != 0) {
+			if (!td_ioengine_flagged(td, FIO_SYNCIO))
+				io_u_quiesce(td);
+			pthread_mutex_lock(&z->mutex);
+		}
 		pthread_mutex_lock(&f->zbd_info->mutex);
-		if (td->o.max_open_zones == 0)
+		if (g_max_open_zones == 0)
 			goto examine_zone;
 		if (f->zbd_info->num_open_zones == 0) {
 			pthread_mutex_unlock(&f->zbd_info->mutex);
@@ -1402,22 +1430,24 @@ static struct fio_zone_info *zbd_convert_to_open_zone(struct thread_data *td,
 	/* Both z->mutex and f->zbd_info->mutex are held. */
 
 examine_zone:
-	if (z->wp + min_bs <= z->start + z->capacity) {
+	if ((z->wp + min_bs <= z->start + z->capacity)  && is_valid_offset(f, z->start)) {
 		pthread_mutex_unlock(&f->zbd_info->mutex);
 		goto out;
 	}
 
-	if (td->o.max_open_zones)
+	if (g_max_open_zones)
 		zbd_close_zone(td, f, open_zone_idx);
 	pthread_mutex_unlock(&f->zbd_info->mutex);
     if (!g_finish_zone) {
     	z->cond = BLK_ZONE_COND_FULL;
     }
-	/* Only z->mutex is held. */
+    /* Only z->mutex is held. */
+
+    /* Only z->mutex is held. */
 
 	/* Zone 'z' is full, so try to open a new zone. */
 
-    if ((td->o.max_open_zones > 0) && (f->zbd_info->num_open_zones < td->o.max_open_zones)) {
+    if ((g_max_open_zones > 0) && (f->zbd_info->num_open_zones < g_max_open_zones)) {
 
 		srand(time(NULL));
 		for (i = f->io_size / f->zbd_info->zone_size; i > 0; i--) {
@@ -1462,7 +1492,7 @@ examine_zone:
 		z = &f->zbd_info->zone_info[zone_idx];
 
 		pthread_mutex_lock(&z->mutex);
-		if (z->wp + min_bs <= z->start + z->capacity)
+		if ((z->wp + min_bs <= z->start + z->capacity)  && is_valid_offset(f, z->start))
 			goto out;
 		pthread_mutex_lock(&f->zbd_info->mutex);
 	}
@@ -1946,7 +1976,7 @@ enum io_u_action zbd_adjust_block(struct thread_data *td, struct io_u *io_u)
 			/* If filling empty zones first attempt to open an empty zone rather
 			 * than reset current zone*/
 			if ((td->o.fill_empty_zones_first) && zbd_zone_full(f, zb, min_bs)) {
-				if (full_zones(f) <= (f->zbd_info->nr_zones - td->o.max_open_zones)) {
+				if (full_zones(f) <= (f->zbd_info->nr_zones - g_max_open_zones)) {
 					pthread_mutex_unlock(&zb->mutex);
 					zb = zbd_convert_to_open_zone(td, io_u);
 					if (!zb)

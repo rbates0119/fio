@@ -163,6 +163,24 @@ struct nvme_id_ns_zns {
 	uint8_t 			vs[256];
 } __attribute__((packed));
 
+struct nvme_id_ns_zns_2 {
+	uint16_t             zoc;
+	uint16_t             ozcs;
+	uint8_t              rsvd4[12];
+	uint32_t             mar;
+	uint32_t             mor;
+	uint8_t              rsvd24[8];
+	uint32_t             rrl;
+	uint32_t                  frl;
+	uint16_t                  zrwas;
+	uint32_t                  zrwacg;
+	uint32_t                  micws;
+	uint8_t                    rsvd50[3534];
+	struct nvme_zns_lbafe   lbafe[16];
+	uint8_t                    vs[256];
+} __attribute__((packed));
+
+
 #define NVME_IOCTL_ADMIN_CMD	_IOWR('N', 0x41, struct nvme_admin_cmd)
 
 #ifdef CONFIG_LINUX_BLKZONED
