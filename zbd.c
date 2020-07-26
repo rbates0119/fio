@@ -1389,8 +1389,8 @@ static struct fio_zone_info *zbd_convert_to_open_zone(struct thread_data *td,
 	} else {
 		zone_idx = zbd_zone_idx(f, io_u->offset);
 	}
-//	dprint(FD_ZBD, "%s(%s): starting from zone %d id = %d, zones = %d (offset 0x%llX, buflen %lld)\n",
-//	       __func__, f->file_name, zone_idx, td->thread_number, f->zbd_info->num_open_zones, (io_u->offset/4096), io_u->buflen);
+	dprint(FD_ZBD, "%s(%s): starting from zone %d id = %d, zones = %d (offset 0x%llX, buflen %lld)\n",
+	       __func__, f->file_name, zone_idx, td->thread_number, f->zbd_info->num_open_zones, io_u->offset, io_u->buflen);
 
 	/*
 	 * Since z->mutex is the outer lock and f->zbd_info->mutex the inner
@@ -1414,6 +1414,8 @@ static struct fio_zone_info *zbd_convert_to_open_zone(struct thread_data *td,
 			pthread_mutex_unlock(&z->mutex);
 			dprint(FD_ZBD, "%s(%s): no zones are open\n",
 			       __func__, f->file_name);
+			if (td->o.issue_zone_finish)
+				goto open_zone;
 			return NULL;
 		}
 		open_zone_idx = ((io_u->offset - f->file_offset) *
@@ -1446,7 +1448,7 @@ examine_zone:
     /* Only z->mutex is held. */
 
 	/* Zone 'z' is full, so try to open a new zone. */
-
+open_zone:
     if ((g_max_open_zones > 0) && (f->zbd_info->num_open_zones < g_max_open_zones)) {
 
 		srand(time(NULL));
