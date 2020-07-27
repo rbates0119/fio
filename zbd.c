@@ -1273,7 +1273,7 @@ static bool zbd_open_zone(struct thread_data *td, const struct io_u *io_u,
 	struct fio_zone_info *z = &f->zbd_info->zone_info[zone_idx];
 	bool res = true;
 
-	if ((z->cond == BLK_ZONE_COND_OFFLINE) || (z->cond == BLK_ZONE_COND_FULL))
+	if (z->cond == BLK_ZONE_COND_OFFLINE)
 		return false;
 
 	/*
@@ -1414,9 +1414,7 @@ static struct fio_zone_info *zbd_convert_to_open_zone(struct thread_data *td,
 			pthread_mutex_unlock(&z->mutex);
 			dprint(FD_ZBD, "%s(%s): no zones are open\n",
 			       __func__, f->file_name);
-			if (td->o.issue_zone_finish)
-				goto open_zone;
-			return NULL;
+			goto open_zone;
 		}
 		open_zone_idx = ((io_u->offset - f->file_offset) *
 			f->zbd_info->num_open_zones) / (f->io_size);
@@ -1505,8 +1503,8 @@ open_zone:
 	return NULL;
 
 out:
-	dprint(FD_ZBD, "%s(%s): returning zone %d\n", __func__, f->file_name,
-	       zone_idx);
+	dprint(FD_ZBD, "%s(%s): returning zone %d, offset = 0x%lX\n", __func__, f->file_name,
+	       zone_idx, z->start);
 	io_u->offset = z->start;
 	return z;
 }
@@ -1982,29 +1980,29 @@ enum io_u_action zbd_adjust_block(struct thread_data *td, struct io_u *io_u)
 					zb = zbd_convert_to_open_zone(td, io_u);
 					if (!zb)
 						goto eof;
-				} else {
-					io_u_quiesce(td);
-					zb->reset_zone = 0;
-					if (zbd_reset_zone(td, f, zb, 2) < 0)
-						goto eof;
-					if (td->o.zrwa_alloc) {
-						if(!zbd_issue_exp_open_zrwa(f,
-						zbd_zone_idx(f, zb->start), td->o.ns_id))
-							return -1;
+					else if (zbd_zone_full(f, zb, min_bs)) {
+						goto reset_zone;
 					}
+				} else {
+					goto reset_zone;
 				}
 			} else {
-				io_u_quiesce(td);
-				zb->reset_zone = 0;
-				if (zbd_reset_zone(td, f, zb, 3) < 0)
-					goto eof;
-				if (td->o.zrwa_alloc) {
-					if(!zbd_issue_exp_open_zrwa(f,
-					zbd_zone_idx(f, zb->start), td->o.ns_id))
-						return -1;
-				}
+				goto reset_zone;
 			}
+		} else {
+			goto good_zone;
 		}
+reset_zone:
+		io_u_quiesce(td);
+		zb->reset_zone = 0;
+		if (zbd_reset_zone(td, f, zb, 3) < 0)
+			goto eof;
+		if (td->o.zrwa_alloc) {
+			if(!zbd_issue_exp_open_zrwa(f,
+			zbd_zone_idx(f, zb->start), td->o.ns_id))
+				return -1;
+		}
+good_zone:
 		/* Make writes occur at the write pointer */
 		assert(!zbd_zone_full(f, zb, min_bs));
 		io_u->offset = zb->wp;
