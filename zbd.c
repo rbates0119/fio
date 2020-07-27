@@ -1981,28 +1981,27 @@ enum io_u_action zbd_adjust_block(struct thread_data *td, struct io_u *io_u)
 					if (!zb)
 						goto eof;
 					else if (zbd_zone_full(f, zb, min_bs)) {
-						goto reset_zone;
+						zb->reset_zone = true;
 					}
 				} else {
-					goto reset_zone;
+					zb->reset_zone = true;
 				}
 			} else {
-				goto reset_zone;
+				zb->reset_zone = true;
 			}
-		} else {
-			goto good_zone;
 		}
-reset_zone:
-		io_u_quiesce(td);
-		zb->reset_zone = 0;
-		if (zbd_reset_zone(td, f, zb, 3) < 0)
-			goto eof;
-		if (td->o.zrwa_alloc) {
-			if(!zbd_issue_exp_open_zrwa(f,
-			zbd_zone_idx(f, zb->start), td->o.ns_id))
-				return -1;
+
+		if (zb->reset_zone) {
+			io_u_quiesce(td);
+			zb->reset_zone = 0;
+			if (zbd_reset_zone(td, f, zb, 3) < 0)
+				goto eof;
+			if (td->o.zrwa_alloc) {
+				if(!zbd_issue_exp_open_zrwa(f,
+				zbd_zone_idx(f, zb->start), td->o.ns_id))
+					return -1;
+			}
 		}
-good_zone:
 		/* Make writes occur at the write pointer */
 		assert(!zbd_zone_full(f, zb, min_bs));
 		io_u->offset = zb->wp;
