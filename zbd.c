@@ -1934,8 +1934,19 @@ enum io_u_action zbd_adjust_block(struct thread_data *td, struct io_u *io_u)
 		if (!zbd_open_zone(td, io_u, zone_idx_b)) {
 			pthread_mutex_unlock(&zb->mutex);
 			zb = zbd_convert_to_open_zone(td, io_u);
-			if (!zb)
-				goto eof;
+			if (!zb) {
+				/*
+				 * If time based and sequential write then
+				 * reset zone if cannot open a new zone
+				 */
+				if ((td->o.time_based) && !td_random(td))
+				{
+					zb = orig_zb;
+					zb->reset_zone = 1;
+				} else {
+					goto eof;
+				}
+			}
 			zone_idx_b = zb - f->zbd_info->zone_info;
 		}
 		/* Check whether the zone reset threshold has been exceeded */
@@ -1956,11 +1967,22 @@ enum io_u_action zbd_adjust_block(struct thread_data *td, struct io_u *io_u)
 			if (zbd_zone_full(f, zb, min_bs)) {
 				pthread_mutex_unlock(&zb->mutex);
 				zb = zbd_convert_to_open_zone(td, io_u);
-				if (!zb)
-					goto eof;
-                        }
-
-                }
+				if (!zb) {
+					/*
+					 * If time based and sequential write then
+					 * reset zone if cannot open a new zone
+					 */
+					if ((td->o.time_based) && !td_random(td))
+					{
+						zb = orig_zb;
+						zb->reset_zone = 1;
+						pthread_mutex_lock(&zb->mutex);
+					} else {
+						goto eof;
+					}
+				}
+			}
+        }
 
 		/* Reset the zone pointer if necessary */
 		/*
