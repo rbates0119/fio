@@ -432,7 +432,7 @@ bool zbd_identify_ns(struct thread_data *td, int fd, void *ns, void *ns_zns)
 		return false;
 	}
 
-	return false;
+	return true;
 }
 
 int zbd_get_nsid(int fd)
@@ -476,6 +476,33 @@ bool zbd_verify_scheduler(const char *file_name, const char *scheduler) {
 	return correct;
 }
 
+bool zbd_reset_all_zones(struct thread_data *td, int fd)
+{
+	int ret;
+	struct nvme_passthru_cmd cmd;
+	memset(&cmd, 0, sizeof(cmd));
+
+	cmd.opcode     = nvme_cmd_zone_mgmt_send;
+	cmd.nsid       = td->o.ns_id;
+	cmd.cdw10      = 0;
+	cmd.cdw11      = 0;
+	cmd.cdw13      = (1 << NVME_ZONE_MGMT_SEND_SELECT_ALL) || NVME_ZONE_ACTION_RESET;
+	cmd.addr       = (__u64)(uintptr_t)NULL;
+	cmd.data_len   = 0;
+
+	dprint(FD_ZBD, "resetting all zones \n");
+
+	ret = ioctl(fd, NVME_IOCTL_IO_CMD, &cmd);
+	dprint(FD_ZBD, "done resetting all zones \n");
+
+	if (ret > 0) {
+		perror("ioctl returned:");
+		return false;
+	}
+
+	return true;
+}
+
 /*
  * Parse the BLKREPORTZONE output and store it in f->zbd_info and
  * get namespace data to verify options are ok. Must be called
@@ -498,7 +525,7 @@ static int parse_zone_info(struct thread_data *td, struct fio_file *f)
 	int fd, i, j, ns_id, bs, ret = 0;
 	char scheduler[15];
 	struct thread_data *td2;
-	uint32_t mar;
+	uint32_t mar, zrwas;
 
 	pthread_mutexattr_init(&attr);
 	pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE);
@@ -520,6 +547,22 @@ static int parse_zone_info(struct thread_data *td, struct fio_file *f)
 	if (fd < 0) {
 		ret = -errno;
 		goto free;
+	}
+
+	if (!g_init_done) {
+		i=0;
+		for_each_td(td2, i) {
+
+			g_max_open_zones += td2->o.max_open_zones;
+			dprint(FD_ZBD, "parse_zone_info: id = %d, max_zones = %d \n",
+					td2->thread_number, g_max_open_zones);
+		}
+		if (td->o.reset_zones_first) {
+			if (!zbd_reset_all_zones(td, fd))
+				dprint(FD_ZBD, "parse_zone_info: reset zones failed \n");
+			td->o.reset_zones_first = false;
+		}
+		g_init_done = true;
 	}
 
 	ret = read_zone_info(fd, 0, buf, bufsz);
@@ -614,17 +657,6 @@ static int parse_zone_info(struct thread_data *td, struct fio_file *f)
 		}
 	}
 
-	if (!g_init_done) {
-		i=0;
-		for_each_td(td2, i) {
-
-			g_max_open_zones += td2->o.max_open_zones;
-			dprint(FD_ZBD, "parse_zone_info: id = %d, max_zones = %d \n",
-					td2->thread_number, g_max_open_zones);
-		}
-		g_init_done = true;
-	}
-
 	if (td->o.zrwa_alloc) {
 		if (zbd_identify_ns(td, fd, ns, ns_zns)) {
 			bs = 4096;
@@ -634,13 +666,19 @@ static int parse_zone_info(struct thread_data *td, struct fio_file *f)
 					bs = ns->lbaf[i].ds;
 			}
 			dprint(FD_ZBD, "parse_zone_info: zrwas = %d mar = %d, bs = %d \n", le16_to_cpu(ns_zns->zrwas), le32_to_cpu(ns_zns->mar), bs);
-			if ((ns_zns->zrwas * bs) <  (td->o.bs[1] * td->o.iodepth)) {
+			if (ns_zns->zrwas > 0) {
+				zrwas = ns_zns->zrwas;
+			} else {
+				zrwas = ((struct nvme_id_ns_zns*)ns_zns)->zrwas;
+			}
+			if ((zrwas * bs) <  (td->o.bs[1] * td->o.iodepth)) {
 				log_err("fio: %s iodepth = %d * blocksize = %lld (%lld) is greater than zrwas = %d \n",
-					f->file_name, td->o.iodepth, td->o.bs[1], (td->o.iodepth * td->o.bs[1]), (ns_zns->zrwas * bs));
+					f->file_name, td->o.iodepth, td->o.bs[1], (td->o.iodepth * td->o.bs[1]), (zrwas * bs));
 				ret = -EINVAL;
 				goto close;
 			}
 		} else {
+			dprint(FD_ZBD, "parse_zone_info: identify failed id = %d \n", td->thread_number);
 			mar = 11;
 		}
 		if (ns_zns->mar > 0)
@@ -1157,21 +1195,14 @@ void zbd_file_reset(struct thread_data *td, struct fio_file *f)
 	ze = &f->zbd_info->zone_info[zone_idx_e];
 	zbd_init_swd(f);
 
-	if (td->o.reset_zones_first && (f->fd != -1)) {
-		dprint(FD_ZBD, "zbd_file_reset: reset zones \n");
-		td->o.reset_zones_first = 0;
-		zbd_reset_zones(td, f, zb, ze, true);
-	} else {
-
-		/*
-		 * If data verification is enabled reset the affected zones before
-		 * writing any data to avoid that a zone reset has to be issued while
-		 * writing data, which causes data loss.
-		 */
-		zbd_reset_zones(td, f, zb, ze, td->o.verify != VERIFY_NONE &&
-				(td->o.td_ddir & TD_DDIR_WRITE) &&
-				td->runstate != TD_VERIFYING);
-	}
+	/*
+	 * If data verification is enabled reset the affected zones before
+	 * writing any data to avoid that a zone reset has to be issued while
+	 * writing data, which causes data loss.
+	 */
+	zbd_reset_zones(td, f, zb, ze, td->o.verify != VERIFY_NONE &&
+			(td->o.td_ddir & TD_DDIR_WRITE) &&
+			td->runstate != TD_VERIFYING);
 	zbd_reset_write_cnt(td, f);
 }
 

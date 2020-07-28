@@ -29,6 +29,38 @@ enum io_u_action {
 	io_u_eof	= 1,
 };
 
+enum nvme_zone_action {
+	NVME_ZONE_ACTION_CLOSE			= 0x1,
+	NVME_ZONE_ACTION_FINISH			= 0x2,
+	NVME_ZONE_ACTION_OPEN			= 0x3,
+	NVME_ZONE_ACTION_RESET			= 0x4,
+	NVME_ZONE_ACTION_OFFLINE		= 0x5,
+	NVME_ZONE_ACTION_SET_EXTENSION		= 0x10,
+	NVME_ZONE_ACTION_COMMIT_ZONE		= 0x11,
+};
+enum nvme_zone_management_action_send_flags {
+	NVME_ZONE_MGMT_SEND_SELECT_ALL		= 8,
+	NVME_ZONE_MGMT_SEND_ZRWAA		= 9,
+};
+
+enum nvme_opcode {
+	nvme_cmd_flush		= 0x00,
+	nvme_cmd_write		= 0x01,
+	nvme_cmd_read		= 0x02,
+	nvme_cmd_write_uncor	= 0x04,
+	nvme_cmd_compare	= 0x05,
+	nvme_cmd_write_zeroes	= 0x08,
+	nvme_cmd_dsm		= 0x09,
+	nvme_cmd_verify		= 0x0c,
+	nvme_cmd_resv_register	= 0x0d,
+	nvme_cmd_resv_report	= 0x0e,
+	nvme_cmd_resv_acquire	= 0x11,
+	nvme_cmd_resv_release	= 0x15,
+	nvme_cmd_zone_mgmt_send	= 0x79,
+	nvme_cmd_zone_mgmt_recv	= 0x7A,
+	nvme_cmd_zone_append	= 0x7d,
+};
+
 /**
  * struct fio_zone_info - information about a single ZBD zone
  * @start: zone start location (bytes)
