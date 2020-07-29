@@ -712,8 +712,9 @@ static int parse_zone_info(struct thread_data *td, struct fio_file *f)
 		}
 	}
 
+	ns_id = zbd_get_nsid(fd);
+
 	if (td->o.ns_id > 0) {
-		ns_id = zbd_get_nsid(fd);
 		if (ns_id > 0)
 		{
 			if (ns_id != td->o.ns_id) {
@@ -722,6 +723,15 @@ static int parse_zone_info(struct thread_data *td, struct fio_file *f)
 				ret = -EINVAL;
 				goto close;
 			}
+		}
+	} else {
+		if (ns_id > 0) {
+			td->o.ns_id = ns_id;
+		} else {
+			log_err("fio: %s job parameter ns_id = %u does not match device ns = %u.\n",
+					f->file_name, td->o.ns_id, ns_id);
+			ret = -EINVAL;
+			goto close;
 		}
 	}
 

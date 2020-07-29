@@ -3444,7 +3444,7 @@ struct fio_option fio_options[FIO_MAX_OPTS] = {
 		.maxlen	= 1,
 		.off1	= offsetof(struct thread_options, ns_id),
 		.help	= "Namespace id to issue nvme commands",
-		.def	= "1",
+		.def	= "0",
 		.category = FIO_OPT_C_IO,
 		.group	= FIO_OPT_G_ZONE,
 	},
