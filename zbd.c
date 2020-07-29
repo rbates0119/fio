@@ -551,12 +551,37 @@ static int parse_zone_info(struct thread_data *td, struct fio_file *f)
 
 	if (!g_init_done) {
 		i=0;
+
 		for_each_td(td2, i) {
 
 			g_max_open_zones += td2->o.max_open_zones;
-			dprint(FD_ZBD, "parse_zone_info: id = %d, max_zones = %d \n",
-					td2->thread_number, g_max_open_zones);
+			dprint(FD_ZBD, "parse_zone_info: id = %d, max_zones = %d, ns_id = %d\n",
+					td2->thread_number, g_max_open_zones, td->o.ns_id);
 		}
+
+		ns_id = zbd_get_nsid(fd);
+
+		if (td->o.ns_id > 0) {
+			if (ns_id > 0)
+			{
+				if (ns_id != td->o.ns_id) {
+					log_err("fio: %s job parameter ns_id = %u does not match device ns = %u.\n",
+						f->file_name, td->o.ns_id, ns_id);
+					ret = -EINVAL;
+					goto close;
+				}
+			}
+		} else {
+			if (ns_id > 0) {
+				td->o.ns_id = ns_id;
+			} else {
+				log_err("fio: %s job parameter ns_id = %u does not match device ns = %u.\n",
+						f->file_name, td->o.ns_id, ns_id);
+				ret = -EINVAL;
+				goto close;
+			}
+		}
+
 		if (td->o.reset_zones_first) {
 			if (!zbd_reset_all_zones(td, fd))
 				dprint(FD_ZBD, "parse_zone_info: reset zones failed \n");
@@ -708,29 +733,6 @@ static int parse_zone_info(struct thread_data *td, struct fio_file *f)
 	} else {
 		sprintf(scheduler, "[mq-deadline]");
 		if (!zbd_verify_scheduler(f->file_name, scheduler)) {
-			goto close;
-		}
-	}
-
-	ns_id = zbd_get_nsid(fd);
-
-	if (td->o.ns_id > 0) {
-		if (ns_id > 0)
-		{
-			if (ns_id != td->o.ns_id) {
-				log_err("fio: %s job parameter ns_id = %u does not match device ns = %u.\n",
-					f->file_name, td->o.ns_id, ns_id);
-				ret = -EINVAL;
-				goto close;
-			}
-		}
-	} else {
-		if (ns_id > 0) {
-			td->o.ns_id = ns_id;
-		} else {
-			log_err("fio: %s job parameter ns_id = %u does not match device ns = %u.\n",
-					f->file_name, td->o.ns_id, ns_id);
-			ret = -EINVAL;
 			goto close;
 		}
 	}
