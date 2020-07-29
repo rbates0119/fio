@@ -486,7 +486,7 @@ bool zbd_reset_all_zones(struct thread_data *td, int fd)
 	cmd.nsid       = td->o.ns_id;
 	cmd.cdw10      = 0;
 	cmd.cdw11      = 0;
-	cmd.cdw13      = (1 << NVME_ZONE_MGMT_SEND_SELECT_ALL) || NVME_ZONE_ACTION_RESET;
+	cmd.cdw13      = (1 << NVME_ZONE_MGMT_SEND_SELECT_ALL) | NVME_ZONE_ACTION_RESET;
 	cmd.addr       = (__u64)(uintptr_t)NULL;
 	cmd.data_len   = 0;
 
