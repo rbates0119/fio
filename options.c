@@ -3886,6 +3886,18 @@ struct fio_option fio_options[FIO_MAX_OPTS] = {
 		},
 	},
 #endif
+#ifdef FIO_HAVE_STREAMID
+	{
+		.name	= "stream_id",
+		.lname	= "Write stream",
+		.type	= FIO_OPT_INT,
+		.off1	= offsetof(struct thread_options, stream_id),
+		.help	= "Set write stream ID",
+		.def	= "0",
+		.category = FIO_OPT_C_ENGINE,
+		.group	= FIO_OPT_G_INVALID,
+	},
+#endif
 	{
 		.name	= "create_serialize",
 		.lname	= "Create serialize",

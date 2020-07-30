@@ -438,6 +438,9 @@ struct thread_data {
 	 */
 	unsigned int total_err_count;
 	int first_error;
+	int fd;
+	int stream_id;
+
 
 	struct fio_flow *flow;
 	unsigned long long flow_counter;

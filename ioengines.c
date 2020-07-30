@@ -20,6 +20,12 @@
 #include "diskutil.h"
 #include "zbd.h"
 
+#ifndef F_LINUX_SPECIFIC_BASE
+#define F_LINUX_SPECIFIC_BASE	1024
+#define F_SET_STREAM_ID			(F_LINUX_SPECIFIC_BASE + 15)
+#define F_SET_FILE_STREAM_ID	(F_LINUX_SPECIFIC_BASE + 16)
+#endif
+
 static FLIST_HEAD(engine_list);
 
 static bool check_engine_ops(struct ioengine_ops *ops)
@@ -566,6 +572,30 @@ int td_io_open_file(struct thread_data *td, struct fio_file *f)
 
 		if (fcntl(f->fd, cmd, &hint) < 0) {
 			td_verror(td, errno, "fcntl write hint");
+			goto err;
+		}
+	}
+#endif
+#ifdef FIO_HAVE_STREAMID
+	if (fio_option_is_set(&td->o, stream_id) &&
+	    (f->filetype == FIO_TYPE_BLOCK || f->filetype == FIO_TYPE_FILE)) {
+		uint64_t stream_id = td->o.stream_id;
+		int cmd;
+
+		/*
+		 * For direct IO, we just need/want to set the stream id on
+		 * the file descriptor. For buffered IO, we need to set
+		 * it on the inode.
+		 */
+		if (td->o.odirect) {
+			dprint(FD_STREAMS, "td_io_open_file: set file stream id\n");
+			cmd = F_SET_FILE_STREAM_ID;
+		} else {
+			dprint(FD_STREAMS, "td_io_open_file: set inode stream id\n");
+			cmd = F_SET_STREAM_ID;
+		}
+		if (fcntl(f->fd, cmd, &stream_id) < 0) {
+			td_verror(td, errno, "fcntl stream id");
 			goto err;
 		}
 	}
