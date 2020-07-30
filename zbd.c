@@ -883,11 +883,6 @@ int zbd_init(struct thread_data *td)
 		}
 	}
 
-	if ((td->o.exp_commit || td->o.zrwa_alloc) && !td->o.ns_id) {
-		log_err("nsid is required for zrwa operations\n\n");
-		return 1;
-	}
-	g_nsid = td->o.ns_id;
 	g_ow = td->o.zrwa_overwrite_percent;
 	g_commit_gran = td->o.commit_gran;
 	g_exp_commit = td->o.exp_commit;
