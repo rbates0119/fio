@@ -574,6 +574,7 @@ static int parse_zone_info(struct thread_data *td, struct fio_file *f)
 		} else {
 			if (ns_id > 0) {
 				td->o.ns_id = ns_id;
+				g_nsid = ns_id;
 			} else {
 				log_err("fio: %s job parameter ns_id = %u does not match device ns = %u.\n",
 						f->file_name, td->o.ns_id, ns_id);
@@ -719,10 +720,9 @@ static int parse_zone_info(struct thread_data *td, struct fio_file *f)
 			ret = -EINVAL;
 			goto close;
 		}
-		if (!td->o.issue_zone_finish)
-		{
+		if (!td->o.issue_zone_finish && td_write(td)) {
 			log_err("fio: %s job parameter issue_zone_finish not set. Must be set if zrwa_alloc is set\n",
-				f->file_name);
+			f->file_name);
 			ret = -EINVAL;
 			goto close;
 		}
