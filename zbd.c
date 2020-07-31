@@ -556,7 +556,7 @@ static int parse_zone_info(struct thread_data *td, struct fio_file *f)
 
 		for_each_td(td2, i) {
 
-			if (td2->o.zone_mode=ZONE_MODE_ZBD)
+			if (td2->o.zone_mode==ZONE_MODE_ZBD)
 				g_max_open_zones += td2->o.max_open_zones;
 			if (td2->o.ns_id > 0) {
 				if (ns_id > 0)
