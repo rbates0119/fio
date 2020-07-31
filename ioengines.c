@@ -20,6 +20,11 @@
 #include "diskutil.h"
 #include "zbd.h"
 
+#ifndef F_LINUX_SPECIFIC_BASE
+#define F_LINUX_SPECIFIC_BASE	1024
+#define F_SET_STREAM_ID			(F_LINUX_SPECIFIC_BASE + 15)
+#define F_SET_FILE_STREAM_ID	(F_LINUX_SPECIFIC_BASE + 16)
+#endif
 static FLIST_HEAD(engine_list);
 
 static bool check_engine_ops(struct ioengine_ops *ops)
