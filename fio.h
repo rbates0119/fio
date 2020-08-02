@@ -453,6 +453,9 @@ struct thread_data {
 
 	char verror[FIO_VERROR_SIZE];
 
+	uint32_t	zbd_ow_blk_count;	 	/* overwrites to be done in blocks per zone */
+	uint32_t    zbd_ow_blk_interval;	/* interval between overwrites */
+
 #ifdef CONFIG_CUDA
 	/*
 	 * for GPU memory management

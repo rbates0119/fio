@@ -29,7 +29,6 @@ static int g_nsid;
 static unsigned long long g_commit_gran;
 static int g_exp_commit;
 static int g_ow;
-static int g_finish_zone_pct;
 static unsigned int g_max_open_zones;
 static bool g_init_done = false;
 
@@ -479,6 +478,8 @@ bool zbd_verify_scheduler(const char *file_name, const char *scheduler) {
 bool zbd_reset_all_zones(struct thread_data *td, int fd)
 {
 	int ret;
+	bool reply = true;
+	struct buf_output out;
 	struct nvme_passthru_cmd cmd;
 	memset(&cmd, 0, sizeof(cmd));
 
@@ -489,18 +490,21 @@ bool zbd_reset_all_zones(struct thread_data *td, int fd)
 	cmd.cdw13      = (1 << NVME_ZONE_MGMT_SEND_SELECT_ALL) | NVME_ZONE_ACTION_RESET;
 	cmd.addr       = (__u64)(uintptr_t)NULL;
 	cmd.data_len   = 0;
+	buf_output_init(&out);
 
-	dprint(FD_ZBD, "resetting all zones \n");
-
+	__log_buf(&out, "Resetting all zones\n");
 	ret = ioctl(fd, NVME_IOCTL_IO_CMD, &cmd);
 	dprint(FD_ZBD, "done resetting all zones \n");
 
 	if (ret > 0) {
 		perror("ioctl returned:");
-		return false;
+		reply =  false;
 	}
 
-	return true;
+	log_info_buf(out.buf, out.buflen);
+	buf_output_free(&out);
+
+	return reply;
 }
 
 /*
@@ -752,7 +756,6 @@ static int parse_zone_info(struct thread_data *td, struct fio_file *f)
 	zbd_info = NULL;
 	ret = 0;
 	g_finish_zone = td->o.issue_zone_finish;
-	g_finish_zone_pct = td->o.finish_zone_pct;
 
 close:
 	sfree(zbd_info);
@@ -921,22 +924,22 @@ int zbd_init(struct thread_data *td)
 		// extra IOs to each zone.
 		ow_blks_per_zone = ((f->zbd_info->zone_info[0].capacity / td->o.bs[1]) *
 					td->o.zrwa_overwrite_percent) / 100;
-		f->zbd_info->ow_blk_interval = (f->zbd_info->zone_info[0].capacity / td->o.bs[1]) / ow_blks_per_zone;
+		td->zbd_ow_blk_interval = (f->zbd_info->zone_info[0].capacity / td->o.bs[1]) / ow_blks_per_zone;
 		// Handle case where ow % is greater than 100
 		if (td->o.zrwa_overwrite_percent > 100)
-			f->zbd_info->ow_blk_interval = 1;
+			td->zbd_ow_blk_interval = 1;
 
 		start_z_idx = zbd_zone_idx(f, f->file_offset);
 		nr_zones = zbd_zone_idx(f, f->io_size) - start_z_idx;
 		total_ow = nr_zones * ow_blks_per_zone * td->o.bs[1];
 		td->o.zrwa_divisor = get_divisor(td->o.zrwa_overwrite_percent);
 		dprint(FD_ZBD, "zbd_init: Overwrites per zone = %lld, total ow bytes = %lld, nr_zones = %d,  overwrites every %u blocks\n",
-						ow_blks_per_zone, total_ow, nr_zones, f->zbd_info->ow_blk_interval);
+						ow_blks_per_zone, total_ow, nr_zones, td->zbd_ow_blk_interval);
 		if (!td->o.timeout)
 			td->o.io_size += total_ow;
-		f->zbd_info->ow_blk_count = ow_blks_per_zone;
+		td->zbd_ow_blk_count = ow_blks_per_zone;
 		dprint(FD_ZBD, "zbd_init: new io_size with overwrites = %lld, ow-count-in-blks-per-zone = %u \n",
-							td->o.io_size, f->zbd_info->ow_blk_count);
+							td->o.io_size, td->zbd_ow_blk_count);
 	}
 
 	return 0;
@@ -1325,6 +1328,9 @@ static bool zbd_open_zone(struct thread_data *td, const struct io_u *io_u,
 	if (td->o.verify != VERIFY_NONE && zbd_zone_full(f, z, min_bs))
 		return false;
 
+	if (g_finish_zone)
+		z->finish_pct = td->o.finish_zone_pct;
+
 	/* Zero means no limit */
 	if (!g_max_open_zones)
 		return true;
@@ -1343,14 +1349,17 @@ static bool zbd_open_zone(struct thread_data *td, const struct io_u *io_u,
 	// Issue an explicit open with ZRWAA bit set via io-passtrhu.
 	if (td->o.zrwa_alloc) {
 		if (z->cond == BLK_ZONE_COND_EMPTY) {
+			dprint(FD_ZBD, "%s: calling zbd_issue_exp_open_zrwa %d, id = %d ns_id = %d%s \n",
+					f->file_name, zone_idx, td->thread_number, td->o.ns_id, td->o.zrwa_alloc ? " with ZRWA": "");
+
 			if(!zbd_issue_exp_open_zrwa(f, zone_idx, td->o.ns_id))
 				goto out;
 		}
 	} else
 		z->cond = BLK_ZONE_COND_IMP_OPEN;
-	dprint(FD_ZBD, "%s: opening zone %d, id = %d, max_zones = %d%s \n",
-			f->file_name, zone_idx, td->thread_number, g_max_open_zones, td->o.zrwa_alloc ? " with ZRWA": "");
-
+	dprint(FD_ZBD, "%s: opening zone %d, id = %d, max_zones = %d, pct = %d%s \n",
+			f->file_name, zone_idx, td->thread_number, g_max_open_zones, td->o.finish_zone_pct, td->o.zrwa_alloc ? " with ZRWA": "");
+	z->finish_pct = td->o.finish_zone_pct;
 	f->zbd_info->open_zones[f->zbd_info->num_open_zones++] = zone_idx;
 	z->open = 1;
 	res = true;
@@ -1480,7 +1489,7 @@ examine_zone:
 	if (g_max_open_zones)
 		zbd_close_zone(td, f, open_zone_idx);
 	pthread_mutex_unlock(&f->zbd_info->mutex);
-    if (!g_finish_zone) {
+    if (!td->o.issue_zone_finish) {
     	z->cond = BLK_ZONE_COND_FULL;
     }
     /* Only z->mutex is held. */
@@ -1627,11 +1636,12 @@ int zbd_finish_full_zone(struct fio_zone_info *z, const struct io_u *io_u)
     if (g_finish_zone) {
 		zone_idx = zbd_zone_idx(f, io_u->offset);
 
-		if (g_finish_zone_pct == 0)
+		if (z->finish_pct == 0)
 		{
 			finish_limit = z->capacity;
 		} else {
-			finish_limit = (z->capacity * g_finish_zone_pct) / 100;
+
+			finish_limit = (z->capacity * z->finish_pct) / 100;
 		}
 		if (((io_u->offset + io_u->buflen) >= (z->start + finish_limit)) &&
 				((io_u->offset + io_u->buflen) <= (z->start + z->capacity))) {
@@ -1639,7 +1649,7 @@ int zbd_finish_full_zone(struct fio_zone_info *z, const struct io_u *io_u)
 			zr.sector = z->start >> 9;
 			zr.nr_sectors =  f->zbd_info->zone_size >> 9;
 			dprint(FD_ZBD, "%s(%s): Issuing BLKFINISHZONE on zone %d at %ld of %ld, pct = %1d\n", __func__,
-					f->file_name, zone_idx, (z->start + finish_limit), (z->start + z->capacity), g_finish_zone_pct);
+					f->file_name, zone_idx, (z->start + finish_limit), (z->start + z->capacity), z->finish_pct);
 			ret = ioctl(f->fd, BLKFINISHZONE, &zr);
 			if (ret < 0)
 				perror("Issuing finish failed with: ");
@@ -2075,9 +2085,9 @@ enum io_u_action zbd_adjust_block(struct thread_data *td, struct io_u *io_u)
 		// is greater zone start + buflen, so that the IO are not
 		// sent to previous zone.
 		if (td->o.zrwa_overwrite_percent && td->o.zrwa_alloc) {
-		       // Issue write to a zone until ow_count reaches f->zbd_info->ow_blk_count
+		       // Issue write to a zone until ow_count reaches td->zbd_ow_blk_count
 		       // During finishing a zone, reset ow_count 0
-		       if (zb->ow_count < f->zbd_info->ow_blk_count &&
+		       if (zb->ow_count < td->zbd_ow_blk_count &&
 				       (io_u->offset >= zb->start + io_u->buflen)) {
 			       if (td->o.zrwa_rand_ow) {
 				       srand(time(NULL));
@@ -2095,7 +2105,7 @@ enum io_u_action zbd_adjust_block(struct thread_data *td, struct io_u *io_u)
 				       // Issue overwrite uniformly after every x IOs.
 				       // where x is total-blocks-in-zone / number-of-blks-to-be-overwritten
 				       // track prev_ow_lba to avoid sendinf ow to same lba again
-				       if (!(((io_u->offset - zb->start) / td->o.bs[1]) % f->zbd_info->ow_blk_interval)) {
+				       if (!(((io_u->offset - zb->start) / td->o.bs[1]) % td->zbd_ow_blk_interval)) {
 					       if (prev_ow_lba != (io_u->offset - io_u->buflen)) {
 						       io_u->offset -= io_u->buflen;
 						       prev_ow_lba = io_u->offset;
