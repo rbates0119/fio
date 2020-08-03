@@ -692,51 +692,53 @@ static int parse_zone_info(struct thread_data *td, struct fio_file *f)
 	}
 
 	if (td->o.zrwa_alloc) {
-		if (zbd_identify_ns(td, fd, ns, ns_zns)) {
-			bs = 4096;
-			for (i = 0; i <= ns->nlbaf; i++) {
+		if (td_write(td)) {
+			if (zbd_identify_ns(td, fd, ns, ns_zns)) {
+				bs = 4096;
+				for (i = 0; i <= ns->nlbaf; i++) {
 
-				if (ns->flbas & 0xf)
-					bs = ns->lbaf[i].ds;
-			}
-			dprint(FD_ZBD, "parse_zone_info: zrwas = %d mar = %d, bs = %d \n", le16_to_cpu(ns_zns->zrwas), le32_to_cpu(ns_zns->mar), bs);
-			if (ns_zns->zrwas > 0) {
-				zrwas = ns_zns->zrwas;
+					if (ns->flbas & 0xf)
+						bs = ns->lbaf[i].ds;
+				}
+				dprint(FD_ZBD, "parse_zone_info: zrwas = %d mar = %d, bs = %d \n", le16_to_cpu(ns_zns->zrwas), le32_to_cpu(ns_zns->mar), bs);
+				if (ns_zns->zrwas > 0) {
+					zrwas = ns_zns->zrwas;
+				} else {
+					zrwas = ((struct nvme_id_ns_zns*)ns_zns)->zrwas;
+				}
+				if ((zrwas * bs) <  (td->o.bs[1] * td->o.iodepth)) {
+					log_err("fio: %s iodepth = %d * blocksize = %lld (%lld) is greater than zrwas = %d \n",
+						f->file_name, td->o.iodepth, td->o.bs[1], (td->o.iodepth * td->o.bs[1]), (zrwas * bs));
+					ret = -EINVAL;
+					goto close;
+				}
 			} else {
-				zrwas = ((struct nvme_id_ns_zns*)ns_zns)->zrwas;
+				dprint(FD_ZBD, "parse_zone_info: identify failed id = %d \n", td->thread_number);
+				mar = 11;
 			}
-			if ((zrwas * bs) <  (td->o.bs[1] * td->o.iodepth)) {
-				log_err("fio: %s iodepth = %d * blocksize = %lld (%lld) is greater than zrwas = %d \n",
-					f->file_name, td->o.iodepth, td->o.bs[1], (td->o.iodepth * td->o.bs[1]), (zrwas * bs));
+			if (ns_zns->mar > 0)
+			{
+				mar = ns_zns->mar;
+			} else {
+				mar = ((struct nvme_id_ns_zns*)ns_zns)->mar;
+			}
+			if (g_max_open_zones > (mar + 1))
+			{
+				log_err("fio: %s job parameter max_open_zones = %u is greater than maximum active resources = %llu (zero based).\n",
+					f->file_name, g_max_open_zones, (unsigned long long)mar);
 				ret = -EINVAL;
 				goto close;
 			}
-		} else {
-			dprint(FD_ZBD, "parse_zone_info: identify failed id = %d \n", td->thread_number);
-			mar = 11;
-		}
-		if (ns_zns->mar > 0)
-		{
-			mar = ns_zns->mar;
-		} else {
-			mar = ((struct nvme_id_ns_zns*)ns_zns)->mar;
-		}
-		if (g_max_open_zones > (mar + 1))
-		{
-			log_err("fio: %s job parameter max_open_zones = %u is greater than maximum active resources = %llu (zero based).\n",
-				f->file_name, g_max_open_zones, (unsigned long long)mar);
-			ret = -EINVAL;
-			goto close;
-		}
-		if (!td->o.issue_zone_finish && td_write(td)) {
-			log_err("fio: %s job parameter issue_zone_finish not set. Must be set if zrwa_alloc is set\n",
-			f->file_name);
-			ret = -EINVAL;
-			goto close;
-		}
-		sprintf(scheduler, "[none]");
-		if (!zbd_verify_scheduler(f->file_name, scheduler)) {
-			goto close;
+			if (!td->o.issue_zone_finish && td_write(td)) {
+				log_err("fio: %s job parameter issue_zone_finish not set. Must be set if zrwa_alloc is set\n",
+				f->file_name);
+				ret = -EINVAL;
+				goto close;
+			}
+			sprintf(scheduler, "[none]");
+			if (!zbd_verify_scheduler(f->file_name, scheduler)) {
+				goto close;
+			}
 		}
 	} else {
 		sprintf(scheduler, "[mq-deadline]");
@@ -1492,9 +1494,7 @@ examine_zone:
     if (!td->o.issue_zone_finish) {
     	z->cond = BLK_ZONE_COND_FULL;
     }
-    /* Only z->mutex is held. */
-
-    /* Only z->mutex is held. */
+     /* Only z->mutex is held. */
 
 	/* Zone 'z' is full, so try to open a new zone. */
 open_zone:
