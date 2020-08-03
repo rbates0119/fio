@@ -1565,9 +1565,9 @@ static struct fio_zone_info *zbd_convert_to_open_zone(struct thread_data *td,
 	/* Both z->mutex and f->zbd_info->mutex are held. */
 
 examine_zone:
-	if (z->wp + min_bs <= z->start + z->capacity &&
-				z->last_io != ZONE_LAST_IO_QUEUED ) {
-	if ((z->wp + min_bs <= z->start + z->capacity)  && is_valid_offset(f, z->start)) {
+if ((z->wp + min_bs <= z->start + z->capacity) &&
+		(z->last_io != ZONE_LAST_IO_QUEUED)	&&
+		is_valid_offset(f, z->start)) {
 		pthread_mutex_unlock(&f->zbd_info->mutex);
 		goto out;
 	}
@@ -2074,8 +2074,10 @@ enum io_u_action zbd_adjust_block(struct thread_data *td, struct io_u *io_u)
 	switch (io_u->ddir) {
 	case DDIR_READ:
 		if (td->runstate == TD_VERIFYING) {
-			zb = zbd_replay_write_order(td, io_u, zb);
-			goto accept;
+			if (td_write(td)) {
+				zb = zbd_replay_write_order(td, io_u, zb);
+				goto accept;
+			}
 		}
 		/*
 		 * Check that there is enough written data in the zone to do an
