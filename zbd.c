@@ -1432,10 +1432,8 @@ static bool zbd_open_zone(struct thread_data *td, const struct io_u *io_u,
 		goto out;
 	// Issue an explicit open with ZRWAA bit set via io-passtrhu.
 	if (td->o.zrwa_alloc) {
-		if (z->cond == BLK_ZONE_COND_EMPTY) {
-			dprint(FD_ZBD, "%s: calling zbd_issue_exp_open_zrwa %d, id = %d ns_id = %d%s \n",
-					f->file_name, zone_idx, td->thread_number, td->o.ns_id, td->o.zrwa_alloc ? " with ZRWA": "");
-
+		if (z->cond == BLK_ZONE_COND_EMPTY ||
+				z->cond == BLK_ZONE_COND_CLOSED) {
 			if(!zbd_issue_exp_open_zrwa(f, zone_idx, td->o.ns_id))
 				goto out;
 		}
