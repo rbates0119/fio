@@ -671,10 +671,13 @@ static int parse_zone_info(struct thread_data *td, struct fio_file *f)
 			switch (z->cond) {
 			case BLK_ZONE_COND_NOT_WP:
 			case BLK_ZONE_COND_FULL:
-				if (z->type == BLK_ZONE_TYPE_SEQWRITE_REQ)
+				if (z->type == BLK_ZONE_TYPE_SEQWRITE_REQ) {
 					p->wp = p->start + (z->capacity << 9);
-				else
+					p->dev_wp = p->start + (z->capacity << 9);
+				} else {
 					p->wp = p->start + zone_size;
+					p->dev_wp = p->start + zone_size;
+				}
 				break;
 			case BLK_ZONE_COND_IMP_OPEN:
 			case BLK_ZONE_COND_EXP_OPEN:
@@ -691,6 +694,7 @@ static int parse_zone_info(struct thread_data *td, struct fio_file *f)
 				assert(z->start <= z->wp);
 				assert(z->wp <= z->start + (zone_size >> 9));
 				p->wp = z->wp << 9;
+				p->dev_wp = z->wp << 9;
 				break;
 			}
 			p->type = z->type;
@@ -1034,6 +1038,7 @@ static int zbd_reset_range(struct thread_data *td, const struct fio_file *f,
 		f->zbd_info->sectors_with_data -= z->wp - z->start;
 		pthread_mutex_unlock(&f->zbd_info->mutex);
 		z->wp = z->start;
+		z->dev_wp = z->start;
 		z->verify_block = 0;
 		z->cond = BLK_ZONE_COND_EMPTY;
 		pthread_mutex_unlock(&z->mutex);
@@ -2233,7 +2238,8 @@ enum io_u_action zbd_adjust_block(struct thread_data *td, struct io_u *io_u)
 		       // Issue write to a zone until ow_count reaches td->zbd_ow_blk_count
 		       // During finishing a zone, reset ow_count 0
 		       if (zb->ow_count < td->zbd_ow_blk_count &&
-				       (io_u->offset >= zb->start + io_u->buflen)) {
+				       (io_u->offset >= zb->start + io_u->buflen) &&
+				       io_u->offset >= zb->dev_wp + io_u->buflen) {
 			       if (td->o.zrwa_rand_ow) {
 				       srand(time(NULL));
 				       if (!(rand() % td->o.zrwa_divisor)) {

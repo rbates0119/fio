@@ -84,6 +84,7 @@ struct fio_zone_info {
 	pthread_mutex_t		mutex;
 	uint64_t		start;
 	uint64_t		wp;
+	uint64_t                dev_wp;
 	uint64_t		capacity;
 	uint32_t		verify_block;
 	uint32_t		ow_count;
