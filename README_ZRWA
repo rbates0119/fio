@@ -40,7 +40,7 @@ Size(fio): Indicates the range starting from offset to offset + size. Fio
 issues IOs in between this range. This should be a minimum of zone-size.
 
 Io_size(fio): Amount of IO in bytes to be issued by Fio. By default it is 
-same as size option. If this is greater than “size” option, fio will wrap
+same as size option. If this is greater than "size" option, fio will wrap
 around the last zone which falls within offset and offset + size.
 
 Direct : Do direct IOs (without using system buffer cache), this needs to be 1,
@@ -51,6 +51,22 @@ Explicit-commit: Commit an lba at given commit-granularity.
 Overwrite-percent: Amount of extra writes in bytes, that needs to go into zrwa.
 
 Max-open-zones: Max open zones supported by drive at any given point of time.
+
+You can set max_open_zones in either the global section or the individual jobs. 
+If set in the global section then each job will be assigned the same value as 
+the global and then that value accumulated to check against the mar value for 
+the open zone limit. If set in each job then the max_open_zones value for 
+each job is accumulated to test against the mar limit value and the global 
+value is not used in each job.
+
+Examples: 
+
+1) If  [global] max_open_zones = 2 and there are 2 job that do not have the value 
+set then each job gets 2 max_open_zones and the total max_open_zones = 4.
+2) if  max_open_zones is not set in [global]  and  [job1] max_open_zones = 1 
+and [job2] max_open_zones = 2 them the total max_open_zones is 3.
+3) if [global] max_open_zones = 5 and [job1] max_open_zones = 2 and 
+[job2] max_open_zones = 2 then the global value is overridden and total = 4.
 
 Points to note:
 1. Below documentation is specifically for the Fio which is internally modified
@@ -83,14 +99,14 @@ completely, specify io_size=1.12GB and size=2GB in the config file.
 drive(100% full), if totally 100 zones are on the device, 
 set io_size= n * zone_capacity (i.e. 100 * 1.1GB  =110GB) and size=200GB,
 this ensures that fio does not reset and overwrite already written zones to
-write “size” bytes of IO.
+write "size" bytes of IO.
 
 6. For random-write workloads, fio will select the zones randomly but has write
-to those zones sequentially only. Specifying “size” options indicates that fio
-can randomly select zones, which are in between from 0 to “size” bytes. Fio
-will select x zones whose start lba is in the 0 – size range and write “size”
+to those zones sequentially only. Specifying "size" options indicates that fio
+can randomly select zones, which are in between from 0 to "size�" bytes. Fio
+will select x zones whose start lba is in the 0 – size range and write "size"
 bytes to these zones and if needed will reset the zones to complete writing
-“size” bytes. For ex: If ZS=2GB,and ZC=1GB, if size specified = 10GB,
+"size" bytes. For ex: If ZS=2GB,and ZC=1GB, if size specified = 10GB,
 then 5 zones(10/2 = 5), i.e. zone0 to zone4 are in the given range and are
 selected to perform the writes based on max-open-zones option.
 Since the ZC=1GB, fio will end up writing more than once to all the
@@ -103,7 +119,7 @@ max_open_zones=X (< =12) in the config enables fio to not open more than
 the max open zones.
 
 8. Fio option can be directly specified on the command line
-using ”- -option=x” or in the config file using “option=x” format.
+using "- -option=x" or in the config file using "option=x" format.
 
 
 
@@ -127,10 +143,22 @@ For ex: if this is set to 5, and zone-capacity is 1GB, then 50MB extra writes
 are done to each zone which is the range of offset to offset+size. 
 
 exp_commit = This indicates that fio has to send an explicit-commit command to
-the drive at a commit granularity of “commit_gran” option.
+the drive at a commit granularity of "commit_gran" option.
 Available only with ZRWA mode. Not supported with zrwa_overwrite_percent option.
 
 commit_gran= This is the minimum amount of write needed before Fio can send the
 explicit_commit command to the drive. By default it is 16KB. Available only
 with ZRWA mode and when explicit_commit is set.
 
+fill_empty_zones_first (boolean). If set to 1 this option is for rand write 
+operations and will select empty zones before resetting full zones during
+random write workloads.
+
+finish_zone_pct (integer).  Percentage of full zone to issue block finish zone.
+Requires issue_zone_finish to be set to 1.  
+Example: finish_zone_pct=95 then block finish zone command will be sent when
+zone is 95 percent full. 
+
+reset_zones_first (boolean).  setting this option to 1 will reset all zones on
+the device berfore starting the workload.  This option can delay the start of 
+the workload if numerous zones will be reset.   
