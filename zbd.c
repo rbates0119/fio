@@ -526,7 +526,7 @@ static int parse_zone_info(struct thread_data *td, struct fio_file *f)
 	struct nvme_id_ns *ns = NULL;
 	pthread_mutexattr_t attr;
 	void *buf;
-	int fd, i, j, ns_id, bs, ret = 0;
+	int fd, i, j, ns_id = 0, bs, ret = 0;
 	char scheduler[15];
 	struct thread_data *td2;
 	uint32_t mar, zrwas;
@@ -555,36 +555,44 @@ static int parse_zone_info(struct thread_data *td, struct fio_file *f)
 
 	if (!g_init_done) {
 		i=0;
-		ns_id = zbd_get_nsid(fd);
-		g_nsid = ns_id;
+
+		if (td->o.zrwa_alloc) {
+
+			ns_id = zbd_get_nsid(fd);
+			g_nsid = ns_id;
+		}
 
 		for_each_td(td2, i) {
 
 			if (td2->o.zone_mode==ZONE_MODE_ZBD)
 				g_max_open_zones += td2->o.max_open_zones;
-			if (td2->o.ns_id > 0) {
-				if (ns_id > 0)
-				{
-					if (ns_id != td2->o.ns_id) {
-						log_err("fio: %s job parameter ns_id = %u does not match device ns = %u.\n",
-							f->file_name, td2->o.ns_id, ns_id);
+
+			if (td->o.zrwa_alloc) {
+
+				if (td2->o.ns_id > 0) {
+					if (ns_id > 0)
+					{
+						if (ns_id != td2->o.ns_id) {
+							log_err("fio: %s job parameter ns_id = %u does not match device ns = %u.\n",
+								f->file_name, td2->o.ns_id, ns_id);
+							ret = -EINVAL;
+							goto close;
+						}
+					} else {
+						log_err("fio: %s could not get device namespace id.\n",
+							f->file_name);
 						ret = -EINVAL;
 						goto close;
 					}
 				} else {
-					log_err("fio: %s could not get device namespace id.\n",
-						f->file_name);
-					ret = -EINVAL;
-					goto close;
-				}
-			} else {
-				if (ns_id > 0) {
-					td2->o.ns_id = ns_id;
-				} else {
-					log_err("fio: %s job parameter ns_id = %u does not match device ns = %u.\n",
-							f->file_name, td2->o.ns_id, ns_id);
-					ret = -EINVAL;
-					goto close;
+					if (ns_id > 0) {
+						td2->o.ns_id = ns_id;
+					} else {
+						log_err("fio: %s job parameter ns_id = %u does not match device ns = %u.\n",
+								f->file_name, td2->o.ns_id, ns_id);
+						ret = -EINVAL;
+						goto close;
+					}
 				}
 			}
 			dprint(FD_ZBD, "parse_zone_info: id = %d, max_zones = %d, td->o.ns_id = %d, ns_id = %d\n",
