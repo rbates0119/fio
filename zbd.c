@@ -1714,55 +1714,38 @@ int zbd_finish_full_zone(struct fio_zone_info *z,
     const struct fio_file *f = io_u->file;
     struct blk_zone_range zr;
     uint32_t zone_idx;
-    uint64_t finish_limit = 0;
 
     zone_idx = zbd_zone_idx(f, io_u->offset);
     if (g_finish_zone && zone_io_finish) {
-	zr.sector = z->start >> 9;
-	zr.nr_sectors =  f->zbd_info->zone_size >> 9;
-	dprint(FD_ZBD, "%s(%s): Issuing BLKFINISHZONE on zone %d\n", __func__,
-			f->file_name, zone_idx);
-	ret = ioctl(f->fd, BLKFINISHZONE, &zr);
-	if (ret < 0)
-	    perror("Issuing finish failed with: ");
-	if (g_ow)
-		z->ow_count = 0;
+		zr.sector = z->start >> 9;
+		zr.nr_sectors =  f->zbd_info->zone_size >> 9;
+		dprint(FD_ZBD, "%s(%s): Issuing BLKFINISHZONE on zone %d\n", __func__,
+				f->file_name, zone_idx);
+		ret = ioctl(f->fd, BLKFINISHZONE, &zr);
+		if (ret < 0)
+			perror("Issuing finish failed with: ");
+		if (g_ow)
+			z->ow_count = 0;
 
-	z->cond = BLK_ZONE_COND_FULL;
-	z->last_io = 0;
-	z->io_q_count = 0;
+		z->cond = BLK_ZONE_COND_FULL;
+		z->last_io = 0;
+		z->io_q_count = 0;
 
-			finish_limit = (z->capacity * z->finish_pct) / 100;
-		}
-		if (((io_u->offset + io_u->buflen) >= (z->start + finish_limit)) &&
-				((io_u->offset + io_u->buflen) <= (z->start + z->capacity))) {
-			z->cond = BLK_ZONE_COND_FULL;
-			zr.sector = z->start >> 9;
-			zr.nr_sectors =  f->zbd_info->zone_size >> 9;
-			dprint(FD_ZBD, "%s(%s): Issuing BLKFINISHZONE on zone %d at %ld of %ld, pct = %1d\n", __func__,
-					f->file_name, zone_idx, (z->start + finish_limit), (z->start + z->capacity), z->finish_pct);
-			ret = ioctl(f->fd, BLKFINISHZONE, &zr);
-			if (ret < 0)
-				perror("Issuing finish failed with: ");
-			if (g_ow)
-				z->ow_count = 0;
+		for (i = 0; i < f->zbd_info->num_open_zones; i++)
+			if (f->zbd_info->open_zones[i] == zone_idx)
+				open_zone_idx = i;
 
-			for (i = 0; i < f->zbd_info->num_open_zones; i++)
-				if (f->zbd_info->open_zones[i] == zone_idx)
-					open_zone_idx = i;
+		/* check if zone was already closed */
+		if (open_zone_idx != -1) {
 
-			/* check if zone was already closed */
-			if (open_zone_idx != -1) {
+			assert(open_zone_idx < f->zbd_info->num_open_zones);
 
-				assert(open_zone_idx < f->zbd_info->num_open_zones);
-
-				memmove(f->zbd_info->open_zones + open_zone_idx,
-					f->zbd_info->open_zones + open_zone_idx + 1,
-					(FIO_MAX_OPEN_ZBD_ZONES - (open_zone_idx + 1)) *
-					sizeof(f->zbd_info->open_zones[0]));
-				f->zbd_info->num_open_zones--;
-				f->zbd_info->zone_info[zone_idx].open = 0;
-			}
+			memmove(f->zbd_info->open_zones + open_zone_idx,
+				f->zbd_info->open_zones + open_zone_idx + 1,
+				(FIO_MAX_OPEN_ZBD_ZONES - (open_zone_idx + 1)) *
+				sizeof(f->zbd_info->open_zones[0]));
+			f->zbd_info->num_open_zones--;
+			f->zbd_info->zone_info[zone_idx].open = 0;
 		}
     }
     return ret;
@@ -1874,6 +1857,7 @@ static void zbd_put_io(struct thread_data *td, const struct io_u *io_u)
 	struct zoned_block_device_info *zbd_info = f->zbd_info;
 	struct fio_zone_info *z;
 	uint32_t zone_idx, zone_q_io_idx;
+    uint64_t finish_limit = 0;
 
 	if (!zbd_info)
 		return;
@@ -1929,9 +1913,16 @@ static void zbd_put_io(struct thread_data *td, const struct io_u *io_u)
 	    }
 	}
 
-	if (z->start + z->capacity == io_u->offset + io_u->buflen)
+	if (z->finish_pct == 0)
+	{
+		finish_limit = z->capacity;
+	} else {
+		finish_limit = (z->capacity * z->finish_pct) / 100;
+	}
+	if (((io_u->offset + io_u->buflen) >= (z->start + finish_limit)) &&
+			((io_u->offset + io_u->buflen) <= (z->start + z->capacity))) {
 		z->last_io = ZONE_LAST_IO_COMPLETED;
-
+	}
 	if (!z->io_q_count && z->last_io == ZONE_LAST_IO_COMPLETED &&
 							!td_read(td))
 		zbd_finish_full_zone(z, io_u, true);

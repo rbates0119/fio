@@ -131,6 +131,7 @@ struct zoned_block_device_info {
 	uint32_t		num_open_zones;
 	uint32_t		write_cnt;
 	uint32_t		open_zones[FIO_MAX_OPEN_ZBD_ZONES];
+	uint64_t		*zones_io_q_buf;
 	struct fio_zone_info	zone_info[0];
 };
 
