@@ -516,7 +516,7 @@ static int parse_zone_info(struct thread_data *td, struct fio_file *f)
 {
 	const unsigned int bufsz = sizeof(struct blk_zone_report) +
 		4096 * sizeof(struct blk_zone);
-	uint32_t nr_zones;
+	uint32_t nr_zones, zone_io_q_size = 0;
 	struct blk_zone_report *hdr;
 	const struct blk_zone *z;
 	struct fio_zone_info *p;
@@ -525,7 +525,7 @@ static int parse_zone_info(struct thread_data *td, struct fio_file *f)
 	struct nvme_id_ns_zns_2 *ns_zns = NULL;
 	struct nvme_id_ns *ns = NULL;
 	pthread_mutexattr_t attr;
-	void *buf;
+	void *buf, *zone_q_buf = NULL;
 	int fd, i, j, ns_id = 0, bs, ret = 0;
 	char scheduler[15];
 	struct thread_data *td2;
@@ -643,15 +643,31 @@ static int parse_zone_info(struct thread_data *td, struct fio_file *f)
 	ret = -ENOMEM;
 	if (!zbd_info)
 		goto close;
+
 	pthread_mutex_init(&zbd_info->mutex, &attr);
 	zbd_info->refcount = 1;
 	p = &zbd_info->zone_info[0];
+
+	zbd_info->zones_io_q_buf = NULL;
+	if (td->o.zrwa_alloc && td->o.dynamic_qd && !td_read(td)) {
+		zone_io_q_size = sizeof(uint64_t) * (td->o.iodepth + 1);
+		zone_q_buf = scalloc(1, zone_io_q_size * nr_zones);
+
+		if (!zone_q_buf)
+			goto close;
+		zbd_info->zones_io_q_buf = zone_q_buf;
+	}
+
 	for (start_sector = 0, j = 0; j < nr_zones;) {
 		z = (void *)(hdr + 1);
 		for (i = 0; i < hdr->nr_zones; i++, j++, z++, p++) {
 			pthread_mutex_init(&p->mutex, &attr);
 			p->start = z->start << 9;
 			p->capacity = z->capacity << 9;
+			if (td->o.zrwa_alloc && td->o.dynamic_qd && !td_read(td)) {
+				p->zone_io_q = zone_q_buf + (j * zone_io_q_size); // j is zone-idx
+				p->last_io = 0;
+			}
 			switch (z->cond) {
 			case BLK_ZONE_COND_NOT_WP:
 			case BLK_ZONE_COND_FULL:
@@ -680,6 +696,7 @@ static int parse_zone_info(struct thread_data *td, struct fio_file *f)
 			p->type = z->type;
 			p->cond = z->cond;
 			p->ow_count = 0;
+			p->io_q_count = 0;
 			if (j > 0 && p->start != p[-1].start + zone_size) {
 				log_info("%s: invalid zone data\n",
 					 f->file_name);
@@ -820,8 +837,10 @@ void zbd_free_zone_info(struct fio_file *f)
 	pthread_mutex_unlock(&f->zbd_info->mutex);
 
 	assert((int32_t)refcount >= 0);
-	if (refcount == 0)
+	if (refcount == 0) {
+		sfree(f->zbd_info->zones_io_q_buf);
 		sfree(f->zbd_info);
+	}
 	f->zbd_info = NULL;
 }
 
@@ -1314,6 +1333,55 @@ bool zbd_issue_exp_open_zrwa(const struct fio_file *f, uint32_t zone_idx,
 	return true;
 }
 
+#define ZRWA_SIZE_BYTES		1024 * 1024
+
+
+uint64_t zbd_get_lowest_queued_offset(struct fio_zone_info *z,
+					uint64_t io_offset)
+{
+	uint64_t low_off;
+	int i;
+
+	// zone_io_q[0] is always the lowest offset ??
+	low_off = z->zone_io_q[0];
+
+	for (i=0; i < z->io_q_count; i++) {
+		if (low_off <= z->zone_io_q[i])
+			continue;
+		low_off = z->zone_io_q[i];
+	}
+
+	dprint(FD_ZBD, "zbd_get_lowest_queued_offset: oldest pending io %lu, io-offset= %lu fio-wp=%lu q-count = %u, diff = %lu\n",
+			low_off, z->wp, io_offset, z->io_q_count, (io_offset - low_off));
+	return low_off;
+}
+
+// Returning 0 will return BUSY for the IO and will be requeued.
+unsigned int zbd_can_zrwa_queue_more(struct thread_data *td, const struct io_u *io_u)
+{
+	const struct fio_file *f = io_u->file;
+	struct fio_zone_info *z;
+	uint32_t zone_idx;
+
+	// For reads no need to do zrwa check
+	if (td_read(td))
+		return 1;
+	// For non-zrwa cases  and no dynamic qd option return 1
+	if (!td->o.zrwa_alloc && !td->o.dynamic_qd)
+		return 1;
+
+	zone_idx = zbd_zone_idx(f, io_u->offset);
+	z = &f->zbd_info->zone_info[zone_idx];
+
+	if (!z->io_q_count)
+		return 1;
+
+	if ((io_u->offset - zbd_get_lowest_queued_offset(z, io_u->offset)) < ZRWA_SIZE_BYTES)
+		return 1;
+
+	return 0;
+}
+
 /*
  * Open a ZBD zone if it was not yet open. Returns true if either the zone was
  * already open or if opening a new zone is allowed. Returns false if the zone
@@ -1491,6 +1559,8 @@ static struct fio_zone_info *zbd_convert_to_open_zone(struct thread_data *td,
 	/* Both z->mutex and f->zbd_info->mutex are held. */
 
 examine_zone:
+	if (z->wp + min_bs <= z->start + z->capacity &&
+				z->last_io != ZONE_LAST_IO_QUEUED ) {
 	if ((z->wp + min_bs <= z->start + z->capacity)  && is_valid_offset(f, z->start)) {
 		pthread_mutex_unlock(&f->zbd_info->mutex);
 		goto out;
@@ -1633,7 +1703,8 @@ zbd_find_zone(struct thread_data *td, struct io_u *io_u,
 	return NULL;
 }
 
-int zbd_finish_full_zone(struct fio_zone_info *z, const struct io_u *io_u)
+int zbd_finish_full_zone(struct fio_zone_info *z,
+			const struct io_u *io_u, bool zone_io_finish)
 {
     int i, ret = 0, open_zone_idx = -1;
     const struct fio_file *f = io_u->file;
@@ -1641,13 +1712,21 @@ int zbd_finish_full_zone(struct fio_zone_info *z, const struct io_u *io_u)
     uint32_t zone_idx;
     uint64_t finish_limit = 0;
 
-    if (g_finish_zone) {
-		zone_idx = zbd_zone_idx(f, io_u->offset);
+    zone_idx = zbd_zone_idx(f, io_u->offset);
+    if (g_finish_zone && zone_io_finish) {
+	zr.sector = z->start >> 9;
+	zr.nr_sectors =  f->zbd_info->zone_size >> 9;
+	dprint(FD_ZBD, "%s(%s): Issuing BLKFINISHZONE on zone %d\n", __func__,
+			f->file_name, zone_idx);
+	ret = ioctl(f->fd, BLKFINISHZONE, &zr);
+	if (ret < 0)
+	    perror("Issuing finish failed with: ");
+	if (g_ow)
+		z->ow_count = 0;
 
-		if (z->finish_pct == 0)
-		{
-			finish_limit = z->capacity;
-		} else {
+	z->cond = BLK_ZONE_COND_FULL;
+	z->last_io = 0;
+	z->io_q_count = 0;
 
 			finish_limit = (z->capacity * z->finish_pct) / 100;
 		}
@@ -1694,7 +1773,8 @@ int zbd_finish_full_zone(struct fio_zone_info *z, const struct io_u *io_u)
  * For write and trim operations, update the write pointer of the I/O unit
  * target zone.
  */
-static void zbd_queue_io(struct io_u *io_u, int q, bool success)
+static void zbd_queue_io(struct thread_data *td,
+		struct io_u *io_u, int q, bool success)
 {
 	const struct fio_file *f = io_u->file;
 	struct zoned_block_device_info *zbd_info = f->zbd_info;
@@ -1715,13 +1795,22 @@ static void zbd_queue_io(struct io_u *io_u, int q, bool success)
 	if (!success)
 		goto unlock;
 
-	dprint(FD_ZBD, "%s: queued I/O (%lld, %llu) for zone %u\n",
-		f->file_name, io_u->offset, io_u->buflen, zone_idx);
+	if (td->o.zrwa_alloc && td->o.dynamic_qd && !td_read(td)) {
+		assert(z->io_q_count < td->o.iodepth + 1);
+		z->zone_io_q[z->io_q_count++] = io_u->offset;
+	}
+
+	dprint(FD_ZBD, "%s: queued I/O (%lld, %llu) for zone %u, q-len = %u\n",
+		f->file_name, io_u->offset, io_u->buflen, zone_idx, z->io_q_count);
 
 	switch (io_u->ddir) {
 	case DDIR_WRITE:
 		zone_end = min((uint64_t)(io_u->offset + io_u->buflen),
 			       (z->start + z->capacity));
+
+		if (z->start + z->capacity == io_u->offset + io_u->buflen)
+			z->last_io = ZONE_LAST_IO_QUEUED;
+
 		pthread_mutex_lock(&zbd_info->mutex);
 		/*
 		 * z->wp > zone_end means that one or more I/O errors
@@ -1742,22 +1831,45 @@ static void zbd_queue_io(struct io_u *io_u, int q, bool success)
 unlock:
 	if (!success || q != FIO_Q_QUEUED) {
 		/* BUSY or COMPLETED: unlock the zone */
-		zbd_finish_full_zone(z, io_u);
-		pthread_mutex_unlock(&z->mutex);
-		io_u->zbd_put_io = NULL;
+		if(td_ioengine_flagged(td, FIO_SYNCIO)) {
+			if (z->start + z->capacity == io_u->offset + io_u->buflen
+					&& !td_read(td))
+				zbd_finish_full_zone(z, io_u, true);
+		}
+		/* If BUSY, keep the lock and the zbd_put_io cb,
+		 * so that we can get the completion
+		 */
+		if (q == FIO_Q_BUSY) {
+			assert(success);
+		} else {
+			pthread_mutex_unlock(&z->mutex);
+			io_u->zbd_put_io = NULL;
+		}
 	}
 }
 
+unsigned int zbd_get_zone_q_io_idx(struct fio_zone_info *z, uint64_t offset)
+{
+	int i;
+
+	for (i = 0; i < z->io_q_count; i++) {
+		if (offset == z->zone_io_q[i])
+			return i;
+	}
+	printf("%s: Error: Did not find the completed io at offset %ld in the zone io queue\n", __func__, offset);
+	assert(0);
+	return 0;
+}
 /**
  * zbd_put_io - Unlock an I/O unit target zone lock
  * @io_u: I/O unit
  */
-static void zbd_put_io(const struct io_u *io_u)
+static void zbd_put_io(struct thread_data *td, const struct io_u *io_u)
 {
 	const struct fio_file *f = io_u->file;
 	struct zoned_block_device_info *zbd_info = f->zbd_info;
 	struct fio_zone_info *z;
-	uint32_t zone_idx;
+	uint32_t zone_idx, zone_q_io_idx;
 
 	if (!zbd_info)
 		return;
@@ -1771,6 +1883,26 @@ static void zbd_put_io(const struct io_u *io_u)
 
 	dprint(FD_ZBD, "%s: terminate I/O (%lld, %llu) for zone %u\n",
 		f->file_name, io_u->offset, io_u->buflen, zone_idx);
+
+	if (td->o.zrwa_alloc && td->o.dynamic_qd && !td_read(td)) {
+		if (!z->io_q_count) {
+			printf("%s: Error: zone io queue is empty !! offset %lld \n", __func__, io_u->offset);
+			assert(0);
+		}
+		for (int i = 0; i < z->io_q_count; i++)
+			dprint(FD_ZBD, "z->zone_io_q[%d] = %lu \n", i, z->zone_io_q[i]);
+
+		zone_q_io_idx = zbd_get_zone_q_io_idx(z, io_u->offset);
+		if (zone_q_io_idx + 1 == z->io_q_count) {
+			z->io_q_count--;
+			z->zone_io_q[zone_q_io_idx] = 0;
+		} else {
+			memmove(z->zone_io_q + zone_q_io_idx,
+				z->zone_io_q + zone_q_io_idx + 1,
+				(z->io_q_count - (zone_q_io_idx + 1)) * sizeof(uint64_t));
+			z->io_q_count--;
+		}
+	}
 
         // If bs < commit_gran, if completed IO address is a multiple of commit gran,
         // then issue a commit to that lba.
@@ -1793,7 +1925,12 @@ static void zbd_put_io(const struct io_u *io_u)
 	    }
 	}
 
-	zbd_finish_full_zone(z, io_u);
+	if (z->start + z->capacity == io_u->offset + io_u->buflen)
+		z->last_io = ZONE_LAST_IO_COMPLETED;
+
+	if (!z->io_q_count && z->last_io == ZONE_LAST_IO_COMPLETED &&
+							!td_read(td))
+		zbd_finish_full_zone(z, io_u, true);
 
 	assert(pthread_mutex_unlock(&z->mutex) == 0);
 	zbd_check_swd(f);
@@ -2119,8 +2256,8 @@ enum io_u_action zbd_adjust_block(struct thread_data *td, struct io_u *io_u)
 						       prev_ow_lba = io_u->offset;
 						       td->ts.zrwa_overwrite_bytes += io_u->buflen;
 						       zb->ow_count++;
-						       dprint(FD_ZBD,"Issuing overwrite io at offset %llu, zb->start= %lu, ow_count = %d\n",
-								       io_u->offset, zb->start, zb->ow_count);
+						       dprint(FD_ZBD,"Issuing overwrite io at offset %llu, z->start= %lu, z->wp= %lu, ow_count = %d\n",
+								       io_u->offset, zb->start, zb->wp, zb->ow_count);
 					       }
 					}
 				}
@@ -2132,6 +2269,7 @@ enum io_u_action zbd_adjust_block(struct thread_data *td, struct io_u *io_u)
 			       io_u->offset);
 			goto eof;
 		}
+
 		/*
 		 * Make sure that the buflen is a multiple of the minimal
 		 * block size. Give up if shrinking would make the request too

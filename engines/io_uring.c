@@ -22,6 +22,7 @@
 
 #include "../lib/types.h"
 #include "../os/linux/io_uring.h"
+#include "../zbd.h"
 
 struct io_sq_ring {
 	unsigned *head;
@@ -358,6 +359,9 @@ static enum fio_q_status fio_ioring_queue(struct thread_data *td,
 	fio_ro_check(td, io_u);
 
 	if (ld->queued == ld->iodepth)
+		return FIO_Q_BUSY;
+
+	if (!zbd_can_zrwa_queue_more(td, io_u))
 		return FIO_Q_BUSY;
 
 	if (io_u->ddir == DDIR_TRIM) {

@@ -353,6 +353,7 @@ struct thread_options {
 	uint32_t zrwa_divisor;
 	uint32_t zrwa_rand_ow;
 	uint32_t finish_zone_pct;
+	uint32_t dynamic_qd;
 	fio_fp64_t zrt;
 	fio_fp64_t zrf;
 };

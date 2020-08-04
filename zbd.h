@@ -28,6 +28,11 @@ enum io_u_action {
 	io_u_accept	= 0,
 	io_u_eof	= 1,
 };
+enum zone_last_io_status {
+	ZONE_LAST_IO_NOT_SUBMITTED	= 0,
+	ZONE_LAST_IO_QUEUED		= 1,
+	ZONE_LAST_IO_COMPLETED		= 2,
+};
 
 enum nvme_zone_action {
 	NVME_ZONE_ACTION_CLOSE			= 0x1,
@@ -87,6 +92,9 @@ struct fio_zone_info {
 	enum blk_zone_cond	cond:4;
 	unsigned int		open:1;
 	unsigned int		reset_zone:1;
+	unsigned int		io_q_count;
+	uint8_t			last_io;
+	uint64_t		*zone_io_q;
 #endif
 };
 
@@ -224,19 +232,23 @@ enum io_u_action zbd_adjust_block(struct thread_data *td, struct io_u *io_u);
 char *zbd_write_status(const struct thread_stat *ts);
 bool zbd_issue_exp_open_zrwa(const struct fio_file *f, uint32_t zone_idx,
 						uint32_t nsid);
+unsigned int zbd_can_zrwa_queue_more(struct thread_data *td,
+				const struct io_u *io_u);
 
-static inline void zbd_queue_io_u(struct io_u *io_u, enum fio_q_status status)
+static inline void zbd_queue_io_u(struct thread_data *td,
+		struct io_u *io_u, enum fio_q_status status)
 {
 	if (io_u->zbd_queue_io) {
-		io_u->zbd_queue_io(io_u, status, io_u->error == 0);
+		io_u->zbd_queue_io(td, io_u, status, io_u->error == 0);
 		io_u->zbd_queue_io = NULL;
 	}
 }
 
-static inline void zbd_put_io_u(struct io_u *io_u)
+static inline void zbd_put_io_u(struct thread_data *td,
+					struct io_u *io_u)
 {
 	if (io_u->zbd_put_io) {
-		io_u->zbd_put_io(io_u);
+		io_u->zbd_put_io(td, io_u);
 		io_u->zbd_queue_io = NULL;
 		io_u->zbd_put_io = NULL;
 	}
@@ -272,9 +284,10 @@ static inline char *zbd_write_status(const struct thread_stat *ts)
 	return NULL;
 }
 
-static inline void zbd_queue_io_u(struct io_u *io_u,
+static inline void zbd_queue_io_u(struct thread_data *td, struct io_u *io_u,
 				  enum fio_q_status status) {}
-static inline void zbd_put_io_u(struct io_u *io_u) {}
+static inline void zbd_put_io_u(struct thread_data *td,
+						struct io_u *io_u) {}
 
 static inline void setup_zbd_zone_mode(struct thread_data *td,
 					struct io_u *io_u)

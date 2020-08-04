@@ -15,6 +15,7 @@
 #include "../lib/pow2.h"
 #include "../optgroup.h"
 #include "../lib/memalign.h"
+#include "../zbd.h"
 
 /* Should be defined in newest aio_abi.h */
 #ifndef IOCB_FLAG_IOPRIO
@@ -231,6 +232,9 @@ static enum fio_q_status fio_libaio_queue(struct thread_data *td,
 	fio_ro_check(td, io_u);
 
 	if (ld->queued == td->o.iodepth)
+		return FIO_Q_BUSY;
+
+	if (!zbd_can_zrwa_queue_more(td, io_u))
 		return FIO_Q_BUSY;
 
 	/*
