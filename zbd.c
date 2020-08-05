@@ -24,6 +24,11 @@
 #include "verify.h"
 #include "zbd.h"
 
+#define	NVME_ZONE_MGMT_SEND_ZRWAA	9
+#define NVME_ZONE_ACTION_OPEN       	0x3
+#define NVME_ZONE_ACTION_COMMIT		0x11
+#define NVME_ZONE_LBA_SHIFT		12
+
 static int g_finish_zone;
 static int g_nsid;
 static unsigned long long g_commit_gran;
@@ -475,34 +480,42 @@ bool zbd_verify_scheduler(const char *file_name, const char *scheduler) {
 	return correct;
 }
 
-bool zbd_reset_all_zones(struct thread_data *td, int fd)
+bool zbd_zone_reset(struct thread_data *td, int fd, uint64_t llba, bool all_zones)
 {
 	int ret;
 	bool reply = true;
 	struct buf_output out;
 	struct nvme_passthru_cmd cmd;
+	uint64_t lba = (llba >> NVME_ZONE_LBA_SHIFT);
 	memset(&cmd, 0, sizeof(cmd));
+
+	dprint(FD_ZBD, "zbd_zone_reset: lba = 0x%lX \n", lba);
 
 	cmd.opcode     = nvme_cmd_zone_mgmt_send;
 	cmd.nsid       = td->o.ns_id;
-	cmd.cdw10      = 0;
-	cmd.cdw11      = 0;
-	cmd.cdw13      = (1 << NVME_ZONE_MGMT_SEND_SELECT_ALL) | NVME_ZONE_ACTION_RESET;
+	cmd.cdw10      = lba & 0xffffffff;
+	cmd.cdw11      = lba >> 32;
+	if (all_zones)
+		cmd.cdw13      = (1 << NVME_ZONE_MGMT_SEND_SELECT_ALL) | NVME_ZONE_ACTION_RESET;
+	else
+		cmd.cdw13      = NVME_ZONE_ACTION_RESET;
 	cmd.addr       = (__u64)(uintptr_t)NULL;
 	cmd.data_len   = 0;
-	buf_output_init(&out);
 
-	__log_buf(&out, "Resetting all zones\n");
+	if (all_zones) {
+		buf_output_init(&out);
+		__log_buf(&out, "Resetting all zones\n");
+		log_info_buf(out.buf, out.buflen);
+	}
 	ret = ioctl(fd, NVME_IOCTL_IO_CMD, &cmd);
-	dprint(FD_ZBD, "done resetting all zones \n");
 
 	if (ret > 0) {
 		perror("ioctl returned:");
 		reply =  false;
 	}
 
-	log_info_buf(out.buf, out.buflen);
-	buf_output_free(&out);
+	if (all_zones)
+		buf_output_free(&out);
 
 	return reply;
 }
@@ -599,10 +612,10 @@ static int parse_zone_info(struct thread_data *td, struct fio_file *f)
 					td2->thread_number, g_max_open_zones, td2->o.ns_id, ns_id);
 		}
 
-		if (td->o.reset_zones_first) {
-			if (!zbd_reset_all_zones(td, fd))
+		if (td->o.reset_all_zones_first) {
+			if (!zbd_zone_reset(td, fd, 0x00, true))
 				dprint(FD_ZBD, "parse_zone_info: reset zones failed \n");
-			td->o.reset_zones_first = false;
+			td->o.reset_all_zones_first = false;
 		}
 		g_init_done = true;
 	}
@@ -681,13 +694,28 @@ static int parse_zone_info(struct thread_data *td, struct fio_file *f)
 				break;
 			case BLK_ZONE_COND_IMP_OPEN:
 			case BLK_ZONE_COND_EXP_OPEN:
-				assert(z->start <= z->wp);
-				assert(z->wp <= z->start + (zone_size >> 9));
-				p->wp = z->wp << 9;
-				if ((g_max_open_zones > 0) && !td->o.reset_zones_first) {
-					zbd_info->open_zones[zbd_info->num_open_zones++] = j;
-					p->open = 1;
-					assert(zbd_info->num_open_zones <= g_max_open_zones);
+				if (td->o.reset_active_zones_first) {
+					if (!zbd_zone_reset(td, fd, p->start, false))	{
+						td_verror(td, errno, "resetting wp failed");
+						log_err("%s: resetting wp 0x%lX failed (%d).\n",
+							f->file_name, p->start, errno);
+						ret = -1;
+						goto close;
+					} else {
+						assert(z->start <= z->wp);
+						assert(z->wp <= z->start + (zone_size >> 9));
+						p->wp = z->start << 9;
+						p->dev_wp = z->start << 9;
+					}
+				} else {
+					assert(z->start <= z->wp);
+					assert(z->wp <= z->start + (zone_size >> 9));
+					p->wp = z->wp << 9;
+					if ((g_max_open_zones > 0) && !td->o.reset_all_zones_first) {
+						zbd_info->open_zones[zbd_info->num_open_zones++] = j;
+						p->open = 1;
+						assert(zbd_info->num_open_zones <= g_max_open_zones);
+					}
 				}
 				break;
 			default:
@@ -1270,11 +1298,6 @@ static bool is_zone_open(const struct thread_data *td, const struct fio_file *f,
 
 	return false;
 }
-#define	NVME_ZONE_MGMT_SEND_ZRWAA	9
-#define NVME_ZONE_ACTION_OPEN       	0x3
-#define NVME_ZONE_ACTION_COMMIT		0x11
-#define NVME_ZONE_LBA_SHIFT		12
-
 static bool zbd_issue_commit_zone(const struct fio_file *f, uint32_t zone_idx, uint64_t llba)
 {
 	int ret;

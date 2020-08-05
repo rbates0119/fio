@@ -343,7 +343,8 @@ struct thread_options {
 	unsigned int read_beyond_wp;
 	int max_open_zones;
 	bool issue_zone_finish;
-	bool reset_zones_first;
+	bool reset_all_zones_first;
+	bool reset_active_zones_first;
 	bool fill_empty_zones_first;
 	uint32_t ns_id;
 	uint32_t commit_gran;
