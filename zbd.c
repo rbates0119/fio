@@ -718,6 +718,22 @@ static int parse_zone_info(struct thread_data *td, struct fio_file *f)
 					}
 				}
 				break;
+			case BLK_ZONE_COND_CLOSED:
+				if (td->o.reset_active_zones_first) {
+					if (!zbd_zone_reset(td, fd, p->start, false))	{
+						td_verror(td, errno, "resetting wp failed");
+						log_err("%s: resetting wp 0x%lX failed (%d).\n",
+							f->file_name, p->start, errno);
+						ret = -1;
+						goto close;
+					} else {
+						assert(z->start <= z->wp);
+						assert(z->wp <= z->start + (zone_size >> 9));
+						p->wp = z->start << 9;
+						p->dev_wp = z->start << 9;
+					}
+				}
+				break;
 			default:
 				assert(z->start <= z->wp);
 				assert(z->wp <= z->start + (zone_size >> 9));

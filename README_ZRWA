@@ -160,7 +160,7 @@ Example: finish_zone_pct=95 then block finish zone command will be sent when
 zone is 95 percent full. 
 
 reset_active_zones_first (boolean).  setting this option to 1 will reset
-active (open) zones on the device berfore starting 
+active (open and closed) zones on the device berfore starting 
 the workload.   
 
 reset_all_zones_first (boolean).  setting this option to 1 will reset all zones on
