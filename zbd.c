@@ -417,7 +417,7 @@ bool zbd_identify_ns(struct thread_data *td, int fd, void *ns, void *ns_zns)
 	memset(&cmd, 0, sizeof(cmd));
 
 	cmd.opcode     = 6;				//nvme_admin_identify
-	cmd.nsid       = td->o.ns_id;
+	cmd.nsid       = g_nsid;
 	cmd.cdw10      = 5;
 	cmd.cdw11      = 0;
 	cmd.addr       = (__u64)(uintptr_t)ns;
@@ -492,7 +492,7 @@ bool zbd_zone_reset(struct thread_data *td, int fd, uint64_t llba, bool all_zone
 	dprint(FD_ZBD, "zbd_zone_reset: lba = 0x%lX \n", lba);
 
 	cmd.opcode     = nvme_cmd_zone_mgmt_send;
-	cmd.nsid       = td->o.ns_id;
+	cmd.nsid       = g_nsid;
 	cmd.cdw10      = lba & 0xffffffff;
 	cmd.cdw11      = lba >> 32;
 	if (all_zones)
@@ -569,7 +569,7 @@ static int parse_zone_info(struct thread_data *td, struct fio_file *f)
 	if (!g_init_done) {
 		i=0;
 
-		if (td->o.zrwa_alloc) {
+		if (td->o.zrwa_alloc || td->o.reset_all_zones_first || td->o.reset_active_zones_first) {
 
 			ns_id = zbd_get_nsid(fd);
 			g_nsid = ns_id;
