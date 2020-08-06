@@ -88,6 +88,7 @@ struct fio_zone_info {
 	uint64_t		capacity;
 	uint32_t		verify_block;
 	uint32_t		ow_count;
+	uint64_t		prev_ow_lba;
 	uint8_t			finish_pct;
 	enum blk_zone_type	type:2;
 	enum blk_zone_cond	cond:4;
