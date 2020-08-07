@@ -1520,15 +1520,20 @@ static void zbd_close_zone(struct thread_data *td, const struct fio_file *f,
 		return;
 	}
 close:
-	dprint(FD_ZBD, "%s(%s): closing zone %d\n", __func__, f->file_name,
-       zone_idx);
 
-	memmove(f->zbd_info->open_zones + open_zone_idx,
-		f->zbd_info->open_zones + open_zone_idx + 1,
-		(FIO_MAX_OPEN_ZBD_ZONES - (open_zone_idx + 1)) *
-		sizeof(f->zbd_info->open_zones[0]));
-	f->zbd_info->num_open_zones--;
-	f->zbd_info->zone_info[zone_idx].open = 0;
+	/* check if zone was already closed */
+	if (f->zbd_info->open_zones[open_zone_idx] == zone_idx) {
+
+		dprint(FD_ZBD, "%s(%s): closing zone %d\n", __func__, f->file_name,
+		   zone_idx);
+
+		memmove(f->zbd_info->open_zones + open_zone_idx,
+			f->zbd_info->open_zones + open_zone_idx + 1,
+			(FIO_MAX_OPEN_ZBD_ZONES - (open_zone_idx + 1)) *
+			sizeof(f->zbd_info->open_zones[0]));
+		f->zbd_info->num_open_zones--;
+		f->zbd_info->zone_info[zone_idx].open = 0;
+	}
 }
 
 /*
