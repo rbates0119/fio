@@ -746,6 +746,9 @@ static void set_rw_ddir(struct thread_data *td, struct io_u *io_u)
 {
 	enum fio_ddir ddir = get_rw_ddir(td);
 
+	if (td->o.zone_mode == ZONE_MODE_ZBD)
+		ddir = zbd_adjust_ddir(td, io_u, ddir);
+
 	if (td_trimwrite(td)) {
 		struct fio_file *f = io_u->file;
 		if (f->last_pos[DDIR_WRITE] == f->last_pos[DDIR_TRIM])

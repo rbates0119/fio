@@ -88,6 +88,7 @@ struct fio_zone_info {
 	uint64_t		capacity;
 	uint32_t		verify_block;
 	uint32_t		ow_count;
+	uint32_t		pending_ios;
 	uint64_t		prev_ow_lba;
 	uint8_t			finish_pct;
 	enum blk_zone_type	type:2;
@@ -231,6 +232,8 @@ int zbd_init(struct thread_data *td);
 void zbd_file_reset(struct thread_data *td, struct fio_file *f);
 bool zbd_unaligned_write(int error_code);
 void setup_zbd_zone_mode(struct thread_data *td, struct io_u *io_u);
+enum fio_ddir zbd_adjust_ddir(struct thread_data *td, struct io_u *io_u,
+							enum fio_ddir ddir);
 enum io_u_action zbd_adjust_block(struct thread_data *td, struct io_u *io_u);
 char *zbd_write_status(const struct thread_stat *ts);
 bool zbd_issue_exp_open_zrwa(const struct fio_file *f, uint32_t zone_idx,

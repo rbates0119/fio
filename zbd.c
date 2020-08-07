@@ -1500,9 +1500,11 @@ static void zbd_close_zone(struct thread_data *td, const struct fio_file *f,
 	assert(open_zone_idx < f->zbd_info->num_open_zones);
 	zone_idx = f->zbd_info->open_zones[open_zone_idx];
 	z = &f->zbd_info->zone_info[zone_idx];
+	if (z->pending_ios && td_write(td) &&
+		!td_ioengine_flagged(td, FIO_SYNCIO))
+		io_u_quiesce(td);
 	if (g_max_open_zones && td->o.issue_zone_finish &&
 			(td->o.zrwa_alloc || (td->o.finish_zone_pct < 100))) {
-		io_u_quiesce(td);
 		// Handle the case where fio is started and all zones in the range
 		// are in full state. fio MO is to select a zone, open it, if it is
 		// full then close it (this func), select next zone and open it and
@@ -1831,6 +1833,7 @@ static void zbd_queue_io(struct thread_data *td,
 
 	switch (io_u->ddir) {
 	case DDIR_WRITE:
+		z->pending_ios++;
 		zone_end = min((uint64_t)(io_u->offset + io_u->buflen),
 			       (z->start + z->capacity));
 
@@ -1907,6 +1910,11 @@ static void zbd_put_io(struct thread_data *td, const struct io_u *io_u)
 
 	if (z->type != BLK_ZONE_TYPE_SEQWRITE_REQ)
 		return;
+
+ 	if (io_u->ddir == DDIR_WRITE) {
+		assert(z->pending_ios);
+		z->pending_ios--;
+	}
 
 	dprint(FD_ZBD, "%s: terminate I/O (%lld, %llu) for zone %u\n",
 		f->file_name, io_u->offset, io_u->buflen, zone_idx);
@@ -2037,6 +2045,34 @@ void setup_zbd_zone_mode(struct thread_data *td, struct io_u *io_u)
 		f->last_pos[ddir] = f->file_offset;
 		td->io_skip_bytes += td->o.zone_skip;
 	}
+}
+
+/**
+ * zbd_adjust_ddir - Adjust an I/O direction for zonemode=zbd.
+ *
+ * @td: FIO thread data.
+ * @io_u: FIO I/O unit.
+ * @ddir: I/O direction before adjustment.
+ *
+ * Return adjusted I/O direction.
+ */
+enum fio_ddir zbd_adjust_ddir(struct thread_data *td, struct io_u *io_u,
+						enum fio_ddir ddir)
+{
+	/*
+	 * In case read direction is chosen for the first random I/O, fio with
+	 * zonemode=zbd stops because no data can be read from zoned block
+	 * devices with all empty zones. Overwrite the first I/O direction as
+	 * write to make sure data to read exists.
+	 */
+	if (ddir != DDIR_READ || !td_rw(td))
+		return ddir;
+
+	if (io_u->file->zbd_info->sectors_with_data ||
+		td->o.read_beyond_wp)
+		return DDIR_READ;
+
+	return DDIR_WRITE;
 }
 
 /**
