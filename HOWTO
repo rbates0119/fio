@@ -1054,25 +1054,25 @@ Target file/device
 
 .. option:: fill_empty_zones_first=bool
 
-	If value is true and in random mode, select a random zone that is empty before 
-	resetting zones that are full.
+	For :option:`zonemode`=zbd. If value is true and in random mode, 
+	select a random zone that is empty before resetting zones that are full.
 	
 .. option:: reset_active_zones_first=bool
 
-	If value is true, reset active zone when fio starts.  Active zones include 
-	implicitly open, explicitly open and closed zones.
+	For :option:`zonemode`=zbd. If value is true, reset active zone when fio starts.
+	Active zones include implicitly open, explicitly open and closed zones.
 	
 .. option:: reset_all_zones_first=bool
 
-	If value is true, reset all zone when fio starts.  Note:  This will not allow
-	fio to resume an interrupted workload.
+	For :option:`zonemode`=zbd. If value is true, reset all zone when fio starts.  
+	Note:  This will not allow fio to resume an interrupted workload.
 	
 .. option:: finish_zone_pct=int
 
-		If issue_zone_finish = 1 then this value is the percent of zone full to issue
-		the zone finish command. Example:  finish_zone_pct=95 then when a zone is 95 
-		percent full a finish block zone command will be sent to the device to finish
-		(set to full) the zone.
+	For :option:`zonemode`=zbd and :option:`issue_zone_finish` = 1. This value
+	is the percent of zone full to issue the zone finish command. Example:  
+	finish_zone_pct=95 then when a zone is 95 percent full a finish block 
+	zone command will be sent to the device to finish (set to full) the zone.
 
 I/O type
 ~~~~~~~~
