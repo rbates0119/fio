@@ -1057,7 +1057,12 @@ Target file/device
 	If value is true and in random mode, select a random zone that is empty before 
 	resetting zones that are full.
 	
-.. option:: reset_zones_first=bool
+.. option:: reset_active_zones_first=bool
+
+	If value is true, reset active zone when fio starts.  Active zones include 
+	implicitly open, explicitly open and closed zones.
+	
+.. option:: reset_all_zones_first=bool
 
 	If value is true, reset all zone when fio starts.  Note:  This will not allow
 	fio to resume an interrupted workload.
