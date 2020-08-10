@@ -543,6 +543,7 @@ static int parse_zone_info(struct thread_data *td, struct fio_file *f)
 	char scheduler[15];
 	struct thread_data *td2;
 	uint32_t mar, zrwas;
+	bool set_cond = true;
 
 	pthread_mutexattr_init(&attr);
 	pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE);
@@ -704,6 +705,8 @@ static int parse_zone_info(struct thread_data *td, struct fio_file *f)
 					} else {
 						assert(z->start <= z->wp);
 						assert(z->wp <= z->start + (zone_size >> 9));
+						p->cond = BLK_ZONE_COND_EMPTY;
+						set_cond = false;
 						p->wp = z->start << 9;
 						p->dev_wp = z->start << 9;
 					}
@@ -729,6 +732,8 @@ static int parse_zone_info(struct thread_data *td, struct fio_file *f)
 					} else {
 						assert(z->start <= z->wp);
 						assert(z->wp <= z->start + (zone_size >> 9));
+						p->cond = BLK_ZONE_COND_EMPTY;
+						set_cond = false;
 						p->wp = z->start << 9;
 						p->dev_wp = z->start << 9;
 					}
@@ -742,7 +747,10 @@ static int parse_zone_info(struct thread_data *td, struct fio_file *f)
 				break;
 			}
 			p->type = z->type;
-			p->cond = z->cond;
+			if (set_cond)
+				p->cond = z->cond;
+			else
+				set_cond = true;
 			p->ow_count = 0;
 			p->io_q_count = 0;
 			if (j > 0 && p->start != p[-1].start + zone_size) {
