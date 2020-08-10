@@ -1619,7 +1619,8 @@ static struct fio_zone_info *zbd_convert_to_open_zone(struct thread_data *td,
 examine_zone:
 if ((z->wp + min_bs <= z->start + z->capacity) &&
 		(z->last_io != ZONE_LAST_IO_QUEUED)	&&
-		is_valid_offset(f, z->start)) {
+		is_valid_offset(f, z->start) &&
+		(z->cond != BLK_ZONE_COND_FULL)) {
 		pthread_mutex_unlock(&f->zbd_info->mutex);
 		goto out;
 	}
@@ -1679,8 +1680,10 @@ open_zone:
 		z = &f->zbd_info->zone_info[zone_idx];
 
 		pthread_mutex_lock(&z->mutex);
-		if ((z->wp + min_bs <= z->start + z->capacity)  && is_valid_offset(f, z->start))
+		if ((z->wp + min_bs <= z->start + z->capacity) &&
+				is_valid_offset(f, z->start) && (z->cond != BLK_ZONE_COND_FULL)) {
 			goto out;
+		}
 		pthread_mutex_lock(&f->zbd_info->mutex);
 	}
 	pthread_mutex_unlock(&f->zbd_info->mutex);

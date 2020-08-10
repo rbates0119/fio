@@ -342,11 +342,9 @@ struct thread_options {
 	/* Parameters that affect zonemode=zbd */
 	unsigned int read_beyond_wp;
 	int max_open_zones;
-	bool issue_zone_finish;
-	bool reset_all_zones_first;
-	bool reset_active_zones_first;
 	bool fill_empty_zones_first;
 	uint32_t ns_id;
+	bool issue_zone_finish;
 	uint32_t commit_gran;
 	uint32_t exp_commit;
 	uint32_t zrwa_alloc;
@@ -357,6 +355,8 @@ struct thread_options {
 	uint32_t dynamic_qd;
 	fio_fp64_t zrt;
 	fio_fp64_t zrf;
+	bool reset_all_zones_first;
+	bool reset_active_zones_first;
 };
 
 
