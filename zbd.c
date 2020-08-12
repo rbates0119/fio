@@ -1419,7 +1419,7 @@ unsigned int zbd_can_zrwa_queue_more(struct thread_data *td, const struct io_u *
 	if (td_read(td))
 		return 1;
 	// For non-zrwa cases  and no dynamic qd option return 1
-	if (!td->o.zrwa_alloc && !td->o.dynamic_qd)
+	if ((td->o.zone_mode == ZONE_MODE_NONE) || (!td->o.zrwa_alloc && !td->o.dynamic_qd))
 		return 1;
 
 	zone_idx = zbd_zone_idx(f, io_u->offset);
