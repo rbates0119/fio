@@ -130,9 +130,7 @@ struct zoned_block_device_info {
 	uint32_t		zone_size_log2;
 	uint32_t		nr_zones;
 	uint32_t		refcount;
-	uint32_t		num_open_zones;
 	uint32_t		write_cnt;
-	uint32_t		open_zones[FIO_MAX_OPEN_ZBD_ZONES];
 	uint64_t		*zones_io_q_buf;
 	struct fio_zone_info	zone_info[0];
 };
@@ -223,6 +221,21 @@ struct nvme_id_ns_zns_2 {
 	uint8_t                    vs[256];
 } __attribute__((packed));
 
+struct nvme_zone_log {
+        __u8            zone_type;
+        __u8            zone_state;
+        __u8            zone_attrs;
+        __u8            __res[5];
+        __le64          capacity;
+        __le64          slba;
+        __le64          wp;
+        __u8            __res2[32];
+};
+
+struct nvme_zone_report_header {
+	__u64           nr_zones;
+	__u8            __res[56];
+};
 
 #define NVME_IOCTL_ADMIN_CMD	_IOWR('N', 0x41, struct nvme_admin_cmd)
 
