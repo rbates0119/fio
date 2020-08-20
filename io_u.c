@@ -464,6 +464,7 @@ static int get_next_block(struct thread_data *td, struct io_u *io_u,
 			log_err("fio: bug in offset generation: offset=%llu, b=%llu\n", (unsigned long long) offset, (unsigned long long) b);
 			ret = 1;
 		}
+		io_u->verify_offset = io_u->offset;
 	}
 
 	return ret;
@@ -506,6 +507,7 @@ static int get_next_offset(struct thread_data *td, struct io_u *io_u,
 		return 1;
 	}
 
+	io_u->verify_offset = io_u->offset;
 	return 0;
 }
 
@@ -964,6 +966,7 @@ static int fill_io_u(struct thread_data *td, struct io_u *io_u)
 
 out:
 	dprint_io_u(io_u, "fill");
+	io_u->verify_offset = io_u->offset;
 	td->zone_bytes += io_u->buflen;
 	return 0;
 }
@@ -1564,9 +1567,10 @@ struct io_u *__get_io_u(struct thread_data *td)
 		__td_io_u_lock(td);
 
 again:
-	if (!io_u_rempty(&td->io_u_requeues))
+	if (!io_u_rempty(&td->io_u_requeues)) {
 		io_u = io_u_rpop(&td->io_u_requeues);
-	else if (!queue_full(td)) {
+		io_u->resid = 0;
+	} else if (!queue_full(td)) {
 		io_u = io_u_qpop(&td->io_u_freelist);
 
 		io_u->file = NULL;
@@ -1973,8 +1977,23 @@ static void io_completed(struct thread_data *td, struct io_u **io_u_ptr,
 	td->last_ddir = ddir;
 
 	if (!io_u->error && ddir_rw(ddir)) {
-		unsigned long long bytes = io_u->buflen - io_u->resid;
+		unsigned long long bytes = io_u->xfer_buflen - io_u->resid;
 		int ret;
+
+		/*
+		 * Make sure we notice short IO from here, and requeue them
+		 * appropriately!
+		 */
+		if (io_u->resid) {
+			io_u->xfer_buflen = io_u->resid;
+			io_u->xfer_buf += bytes;
+			io_u->offset += bytes;
+			td->ts.short_io_u[io_u->ddir]++;
+			if (io_u->offset < io_u->file->real_file_size) {
+				requeue_io_u(td, io_u_ptr);
+				return;
+			}
+		}
 
 		td->io_blocks[ddir]++;
 		td->io_bytes[ddir] += bytes;

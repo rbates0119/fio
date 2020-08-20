@@ -319,6 +319,7 @@ static bool zbd_verify_sizes(void)
 
 			f->min_zone = zbd_zone_idx(f, f->file_offset);
 			f->max_zone = zbd_zone_idx(f, f->file_offset + f->io_size);
+			assert(f->min_zone < f->max_zone);
 		}
 	}
 
@@ -670,54 +671,6 @@ int zbd_setup_files(struct thread_data *td)
 	return 0;
 }
 
-/**
- * zbd_reset_range - reset zones for a range of sectors
- * @td: FIO thread data.
- * @f: Fio file for which to reset zones
- * @sector: Starting sector in units of 512 bytes
- * @nr_sectors: Number of sectors in units of 512 bytes
- *
- * Returns 0 upon success and a negative error code upon failure.
- */
-static int zbd_reset_range(struct thread_data *td, struct fio_file *f,
-			   uint64_t offset, uint64_t length)
-{
-	uint32_t zone_idx_b, zone_idx_e;
-	struct fio_zone_info *zb, *ze, *z;
-	int ret = 0;
-
-	assert(is_valid_offset(f, offset + length - 1));
-
-	switch (f->zbd_info->model) {
-	case ZBD_HOST_AWARE:
-	case ZBD_HOST_MANAGED:
-		ret = zbd_reset_wp(td, f, offset, length);
-		if (ret < 0)
-			return ret;
-		break;
-	default:
-		break;
-	}
-
-	zone_idx_b = zbd_zone_idx(f, offset);
-	zb = &f->zbd_info->zone_info[zone_idx_b];
-	zone_idx_e = zbd_zone_idx(f, offset + length);
-	ze = &f->zbd_info->zone_info[zone_idx_e];
-	for (z = zb; z < ze; z++) {
-		pthread_mutex_lock(&z->mutex);
-		pthread_mutex_lock(&f->zbd_info->mutex);
-		f->zbd_info->sectors_with_data -= z->wp - z->start;
-		pthread_mutex_unlock(&f->zbd_info->mutex);
-		z->wp = z->start;
-		z->verify_block = 0;
-		pthread_mutex_unlock(&z->mutex);
-	}
-
-	td->ts.nr_zone_resets += ze - zb;
-
-	return ret;
-}
-
 static unsigned int zbd_zone_nr(struct zoned_block_device_info *zbd_info,
 				struct fio_zone_info *zone)
 {
@@ -731,14 +684,40 @@ static unsigned int zbd_zone_nr(struct zoned_block_device_info *zbd_info,
  * @z: Zone to reset.
  *
  * Returns 0 upon success and a negative error code upon failure.
+ *
+ * The caller must hold z->mutex.
  */
 static int zbd_reset_zone(struct thread_data *td, struct fio_file *f,
 			  struct fio_zone_info *z)
 {
+	uint64_t offset = z->start;
+	uint64_t length = (z+1)->start - offset;
+	int ret = 0;
+
+	assert(is_valid_offset(f, offset + length - 1));
+
 	dprint(FD_ZBD, "%s: resetting wp of zone %u.\n", f->file_name,
 		zbd_zone_nr(f->zbd_info, z));
+	switch (f->zbd_info->model) {
+	case ZBD_HOST_AWARE:
+	case ZBD_HOST_MANAGED:
+		ret = zbd_reset_wp(td, f, offset, length);
+		if (ret < 0)
+			return ret;
+		break;
+	default:
+		break;
+	}
 
-	return zbd_reset_range(td, f, z->start, zbd_zone_end(z) - z->start);
+	pthread_mutex_lock(&f->zbd_info->mutex);
+	f->zbd_info->sectors_with_data -= z->wp - z->start;
+	pthread_mutex_unlock(&f->zbd_info->mutex);
+	z->wp = z->start;
+	z->verify_block = 0;
+
+	td->ts.nr_zone_resets++;
+
+	return ret;
 }
 
 /* The caller must hold f->zbd_info->mutex */
@@ -861,9 +840,8 @@ static uint64_t zbd_process_swd(const struct fio_file *f, enum swd_action a)
 	struct fio_zone_info *zb, *ze, *z;
 	uint64_t swd = 0;
 
-	zb = &f->zbd_info->zone_info[zbd_zone_idx(f, f->file_offset)];
-	ze = &f->zbd_info->zone_info[zbd_zone_idx(f, f->file_offset +
-						  f->io_size)];
+	zb = &f->zbd_info->zone_info[f->min_zone];
+	ze = &f->zbd_info->zone_info[f->max_zone];
 	for (z = zb; z < ze; z++) {
 		pthread_mutex_lock(&z->mutex);
 		swd += z->wp - z->start;
@@ -1197,7 +1175,7 @@ zbd_find_zone(struct thread_data *td, struct io_u *io_u,
 	struct fio_file *f = io_u->file;
 	struct fio_zone_info *z1, *z2;
 	const struct fio_zone_info *const zf =
-		&f->zbd_info->zone_info[zbd_zone_idx(f, f->file_offset)];
+		&f->zbd_info->zone_info[f->min_zone];
 
 	/*
 	 * Skip to the next non-empty zone in case of sequential I/O and to
@@ -1504,8 +1482,7 @@ enum io_u_action zbd_adjust_block(struct thread_data *td, struct io_u *io_u)
 		if (range < min_bs ||
 		    ((!td_random(td)) && (io_u->offset + min_bs > zb->wp))) {
 			pthread_mutex_unlock(&zb->mutex);
-			zl = &f->zbd_info->zone_info[zbd_zone_idx(f,
-						f->file_offset + f->io_size)];
+			zl = &f->zbd_info->zone_info[f->max_zone];
 			zb = zbd_find_zone(td, io_u, zb, zl);
 			if (!zb) {
 				dprint(FD_ZBD,

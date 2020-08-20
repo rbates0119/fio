@@ -1445,11 +1445,23 @@ void close_files(struct thread_data *td)
 	}
 }
 
+void fio_file_free(struct fio_file *f)
+{
+	if (fio_file_axmap(f))
+		axmap_free(f->io_axmap);
+	if (!fio_file_smalloc(f)) {
+		free(f->file_name);
+		free(f);
+	} else {
+		sfree(f->file_name);
+		sfree(f);
+	}
+}
+
 void close_and_free_files(struct thread_data *td)
 {
 	struct fio_file *f;
 	unsigned int i;
-	bool use_free = td_ioengine_flagged(td, FIO_NOFILEHASH);
 
 	dprint(FD_FILE, "close files\n");
 
@@ -1470,20 +1482,7 @@ void close_and_free_files(struct thread_data *td)
 		}
 
 		zbd_close_file(f);
-
-		if (use_free)
-			free(f->file_name);
-		else
-			sfree(f->file_name);
-		f->file_name = NULL;
-		if (fio_file_axmap(f)) {
-			axmap_free(f->io_axmap);
-			f->io_axmap = NULL;
-		}
-		if (use_free)
-			free(f);
-		else
-			sfree(f);
+		fio_file_free(f);
 	}
 
 	td->o.filename = NULL;
@@ -1609,6 +1608,8 @@ static struct fio_file *alloc_new_file(struct thread_data *td)
 	f->fd = -1;
 	f->shadow_fd = -1;
 	fio_file_reset(td, f);
+	if (!td_ioengine_flagged(td, FIO_NOFILEHASH))
+		fio_file_set_smalloc(f);
 	return f;
 }
 
