@@ -2473,7 +2473,7 @@ proceed:
 		 * device.
 		 */
 		if (td->o.zone_append) {
-			if (f->zbd_info->model == ZBD_DM_NONE)
+			if (f->zbd_info->model == ZBD_NONE)
 				io_u->zone_start_offset = zb->wp;
 			else
 				io_u->zone_start_offset = zb->start;
