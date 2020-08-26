@@ -1143,14 +1143,12 @@ static int zbd_reset_range(struct thread_data *td, const struct fio_file *f,
 	for (z = zb; z < ze; z++) {
 		pthread_mutex_lock(&z->mutex);
 		pthread_mutex_lock(&f->zbd_info->mutex);
-		if (!is_zone_open(td, zone_idx_b)) {
-			f->zbd_info->sectors_with_data -= z->wp - z->start;
-			pthread_mutex_unlock(&f->zbd_info->mutex);
-			z->wp = z->start;
-			z->dev_wp = z->start;
-			z->verify_block = 0;
-			z->cond = BLK_ZONE_COND_EMPTY;
-		}
+		f->zbd_info->sectors_with_data -= z->wp - z->start;
+		pthread_mutex_unlock(&f->zbd_info->mutex);
+		z->wp = z->start;
+		z->dev_wp = z->start;
+		z->verify_block = 0;
+		z->cond = BLK_ZONE_COND_EMPTY;
 		zone_idx_b++;
 		pthread_mutex_unlock(&z->mutex);
 	}
@@ -1576,7 +1574,7 @@ static void zbd_close_zone(struct thread_data *td, const struct fio_file *f,
 close:
 
 	/* check if zone was already closed */
-	if (td->o.open_zones[open_zone_idx] == zone_idx) {
+	if ((td->o.open_zones[open_zone_idx] == zone_idx) && (td->o.num_open_zones > 0)){
 
 		dprint(FD_ZBD, "%s(%s): closing zone %d\n", __func__, f->file_name,
 		   zone_idx);
@@ -1588,6 +1586,7 @@ close:
 		td->o.num_open_zones--;
 		g_open_zones--;
 		f->zbd_info->zone_info[zone_idx].open = 0;
+		z->cond = BLK_ZONE_COND_FULL;
 	}
 
 	return;
@@ -1681,7 +1680,7 @@ if ((z->wp + min_bs <= z->start + z->capacity) &&
 			open_count = zbd_get_open_count(f->fd);
 			dprint(FD_ZBD, "%s(%s): zone %d id = %d, open zones = %d\n",
 			      __func__, f->file_name, zone_idx, td->thread_number, open_count);
-			while ((open_count >= g_mar) && i < 150) {
+			while ((open_count > g_mar) && i < 150) {
 				io_u_quiesce(td);
 				usec_sleep(td,10);
 				open_count = zbd_get_open_count(f->fd);
@@ -1756,7 +1755,7 @@ open_zone:
 	}
 	pthread_mutex_unlock(&f->zbd_info->mutex);
 	pthread_mutex_unlock(&z->mutex);
-	dprint(FD_ZBD, "%s(%s): did not open another zone, force close, id = %d, zone = %d, zone_idx = %d\n", __func__,
+	dprint(FD_ZBD, "%s(%s): did not open another zone, id = %d, zone = %d, zone_idx = %d\n", __func__,
 	       f->file_name, td->thread_number, zone_idx, i);
 	return NULL;
 
@@ -2322,13 +2321,15 @@ enum io_u_action zbd_adjust_block(struct thread_data *td, struct io_u *io_u)
 				zb = zbd_convert_to_open_zone(td, io_u);
 				if (!zb) {
 					/*
-					 * If time based and sequential write then
-					 * reset zone if cannot open a new zone
+					 * If sequential write then
+					 * if cannot open a new zone then pick next zone
+					 * if last zone then wrap around
 					 */
-					if ((td->o.time_based) && !td_random(td))
-					{
-						zb = orig_zb;
-						zb->reset_zone = 1;
+					if (!td_random(td)) {
+						zone_idx_b++;
+						if (zone_idx_b >= f->zbd_info->nr_zones)
+							zone_idx_b = 0;
+						zb = &f->zbd_info->zone_info[zone_idx_b];
 						pthread_mutex_lock(&zb->mutex);
 					} else {
 						goto eof;
