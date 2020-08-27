@@ -698,7 +698,7 @@ static int parse_zone_info(struct thread_data *td, struct fio_file *f)
 	p = &zbd_info->zone_info[0];
 
 	zbd_info->zones_io_q_buf = NULL;
-	if (td->o.zrwa_alloc && td->o.dynamic_qd && !td_read(td)) {
+	if (td->o.zrwa_alloc && td->o.dynamic_qd && (td->o.td_ddir & TD_DDIR_WRITE)) {
 		zone_io_q_size = sizeof(uint64_t) * (td->o.iodepth + 1);
 		zone_q_buf = scalloc(1, zone_io_q_size * nr_zones);
 
@@ -713,7 +713,7 @@ static int parse_zone_info(struct thread_data *td, struct fio_file *f)
 			pthread_mutex_init(&p->mutex, &attr);
 			p->start = z->start << 9;
 			p->capacity = z->capacity << 9;
-			if (td->o.zrwa_alloc && td->o.dynamic_qd && !td_read(td)) {
+			if (td->o.zrwa_alloc && td->o.dynamic_qd && (td->o.td_ddir & TD_DDIR_WRITE)) {
 				p->zone_io_q = zone_q_buf + (j * zone_io_q_size); // j is zone-idx
 				p->last_io = 0;
 			}
@@ -1527,7 +1527,6 @@ static bool zbd_open_zone(struct thread_data *td, const struct io_u *io_u,
 		}
 	} else
 		z->cond = BLK_ZONE_COND_IMP_OPEN;
-	z->finish_pct = td->o.finish_zone_pct;
 	td->o.open_zones[td->o.num_open_zones++] = zone_idx;
 	g_open_zones++;
 	dprint(FD_ZBD, "%s: opening zone %d, id = %d, open_zones = %d, total_open = %d%s \n",
@@ -1609,7 +1608,7 @@ static struct fio_zone_info *zbd_convert_to_open_zone(struct thread_data *td,
 	unsigned int full_zone_idx = 0xFFFF;
 	uint32_t zone_idx, new_zone_idx;
 	int i = 0, open_count;
-	bool find_random = td_random(td);
+	bool find_random = (td_random(td) && td->o.perc_rand[DDIR_WRITE] > 0);
 
 	assert(is_valid_offset(f, io_u->offset));
 
@@ -1907,7 +1906,7 @@ static void zbd_queue_io(struct thread_data *td,
 	if (!success)
 		goto unlock;
 
-	if (td->o.zrwa_alloc && td->o.dynamic_qd && !td_read(td)) {
+	if (td->o.zrwa_alloc && td->o.dynamic_qd && (io_u->ddir == DDIR_WRITE)) {
 		assert(z->io_q_count < td->o.iodepth + 1);
 		z->zone_io_q[z->io_q_count++] = io_u->offset;
 	}
@@ -1946,7 +1945,7 @@ unlock:
 		/* BUSY or COMPLETED: unlock the zone */
 		if(td_ioengine_flagged(td, FIO_SYNCIO)) {
 			if (z->start + z->capacity == io_u->offset + io_u->buflen
-					&& !td_read(td))
+					&& (io_u->ddir != DDIR_READ))
 				zbd_finish_full_zone(td, z, io_u, true);
 		}
 		/* If BUSY, keep the lock and the zbd_put_io cb,
@@ -2003,7 +2002,7 @@ static void zbd_put_io(struct thread_data *td, const struct io_u *io_u)
 	dprint(FD_ZBD, "%s: terminate I/O (%lld, %llu) for zone %u\n",
 		f->file_name, io_u->offset, io_u->buflen, zone_idx);
 
-	if (td->o.zrwa_alloc && td->o.dynamic_qd && !td_read(td)) {
+	if (td->o.zrwa_alloc && td->o.dynamic_qd && (io_u->ddir == DDIR_WRITE)) {
 		if (!z->io_q_count) {
 			printf("%s: Error: zone io queue is empty !! offset %lld \n", __func__, io_u->offset);
 			assert(0);
@@ -2055,7 +2054,7 @@ static void zbd_put_io(struct thread_data *td, const struct io_u *io_u)
 		z->last_io = ZONE_LAST_IO_COMPLETED;
 	}
 	if (!z->io_q_count && z->last_io == ZONE_LAST_IO_COMPLETED &&
-							!td_read(td))
+							(io_u->ddir == DDIR_WRITE))
 		zbd_finish_full_zone(td, z, io_u, true);
 
 	assert(pthread_mutex_unlock(&z->mutex) == 0);
@@ -2310,7 +2309,8 @@ enum io_u_action zbd_adjust_block(struct thread_data *td, struct io_u *io_u)
 			}
 		}
 
-		if (!td_random(td) && f->zbd_info->zone_size > zb->capacity) {
+		if ((!td_random(td) || td->o.perc_rand[DDIR_WRITE] == 0) &&
+				f->zbd_info->zone_size > zb->capacity) {
 			/*
 			 * Seq write on a dev with zone capacity < zone size,
 			 * when wp is at zone capacity, explicitly go to
@@ -2325,7 +2325,7 @@ enum io_u_action zbd_adjust_block(struct thread_data *td, struct io_u *io_u)
 					 * if cannot open a new zone then pick next zone
 					 * if last zone then wrap around
 					 */
-					if (!td_random(td)) {
+					if (!td_random(td) || td->o.perc_rand[DDIR_WRITE] == 0) {
 						zone_idx_b++;
 						if (zone_idx_b >= f->zbd_info->nr_zones)
 							zone_idx_b = 0;
