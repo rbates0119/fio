@@ -93,7 +93,6 @@ struct io_u {
 		struct workqueue_work work;
 	};
 
-#ifdef CONFIG_LINUX_BLKZONED
 	/*
 	 * ZBD mode zbd_queue_io callback: called after engine->queue operation
 	 * to advance a zone write pointer and eventually unlock the I/O zone.
@@ -110,7 +109,6 @@ struct io_u {
 	 */
 	void (*zbd_put_io)(struct thread_data *,
 				const struct io_u *);
-#endif
 
 	/*
 	 * Callback for io completion

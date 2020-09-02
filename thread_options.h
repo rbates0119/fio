@@ -36,7 +36,7 @@ enum fio_memtype {
 #define BSSPLIT_MAX	64
 #define ZONESPLIT_MAX	256
 
-#define FIO_MAX_OPEN_ZBD_ZONES 128
+#define ZBD_MAX_OPEN_ZONES	2048
 
 struct bssplit {
 	uint64_t bs;
@@ -345,7 +345,7 @@ struct thread_options {
 	unsigned int read_beyond_wp;
 	int max_open_zones;
 	int num_open_zones;
-	uint32_t open_zones[FIO_MAX_OPEN_ZBD_ZONES];
+	uint32_t open_zones[ZBD_MAX_OPEN_ZONES];
 	bool fill_empty_zones_first;
 	uint32_t ns_id;
 	bool issue_zone_finish;
