@@ -1034,6 +1034,58 @@ static int zbd_reset_zone(struct thread_data *td, struct fio_file *f,
 	return zbd_reset_range(td, f, z->start, (z+1)->start - z->start);
 }
 
+/* The caller must hold f->zbd_info->mutex */
+static void zbd_close_zone(struct thread_data *td, const struct fio_file *f,
+			   unsigned int open_zone_idx)
+{
+	uint32_t zone_idx;
+	struct fio_zone_info *z;
+
+	assert(open_zone_idx < td->o.num_open_zones);
+	zone_idx = td->o.open_zones[open_zone_idx];
+	z = &f->zbd_info->zone_info[zone_idx];
+	if (z->pending_ios && td_write(td) &&
+		!td_ioengine_flagged(td, FIO_SYNCIO))
+		io_u_quiesce(td);
+	if (g_max_open_zones && td->o.issue_zone_finish &&
+			(td->o.zrwa_alloc || (td->o.finish_zone_pct < 100))) {
+		// Handle the case where fio is started and all zones in the range
+		// are in full state. fio MO is to select a zone, open it, if it is
+		// full then close it (this func), select next zone and open it and
+		// send it to zbd_adjust_block(), which then checks if the zone is
+		// full and if so resets the zone, and starts writing to it. In case
+		// where all zones are full at start and issue_zone_finish is enabled
+		// fio cannot close a zone properly as zone finish is done in the
+		// IO completion path and IOs have not started in this case, so fio
+		// cannot close the zone here in this func and num_open_zones is not
+		// decremented so it cannot open a new zone.
+		if ((z->cond == ZBD_ZONE_COND_FULL) && z->open) {
+			goto close;
+		}
+
+		return;
+	}
+close:
+
+	/* check if zone was already closed */
+	if ((td->o.open_zones[open_zone_idx] == zone_idx) && (td->o.num_open_zones > 0)){
+
+		dprint(FD_ZBD, "%s(%s): closing zone %d\n", __func__, f->file_name,
+		   zone_idx);
+
+		memmove(td->o.open_zones + open_zone_idx,
+			td->o.open_zones + open_zone_idx + 1,
+			(ZBD_MAX_OPEN_ZONES - (open_zone_idx + 1)) *
+			sizeof(td->o.open_zones[0]));
+		td->o.num_open_zones--;
+		g_open_zones--;
+		f->zbd_info->zone_info[zone_idx].open = 0;
+		z->cond = ZBD_ZONE_COND_FULL;
+	}
+
+	return;
+}
+
 /*
  * Reset a range of zones. Returns 0 upon success and 1 upon failure.
  * @td: fio thread data.
@@ -1057,12 +1109,26 @@ static int zbd_reset_zones(struct thread_data *td, struct fio_file *f,
 	dprint(FD_ZBD, "%s: examining zones %u .. %u\n", f->file_name,
 		zbd_zone_nr(f->zbd_info, zb), zbd_zone_nr(f->zbd_info, ze));
 	for (z = zb; z < ze; z++) {
+		uint32_t nz = z - f->zbd_info->zone_info;
+
 		if (!zbd_zone_swr(z))
 			continue;
 		zone_lock(td, z);
-		reset_wp = all_zones ? z->wp != z->start :
-				(td->o.td_ddir & TD_DDIR_WRITE) &&
-				z->wp % min_bs != 0;
+		if (all_zones) {
+			unsigned int i;
+
+			pthread_mutex_lock(&f->zbd_info->mutex);
+			for (i = 0; i < td->o.num_open_zones; i++) {
+				if (td->o.open_zones[i] == nz)
+					zbd_close_zone(td, f, i);
+			}
+			pthread_mutex_unlock(&f->zbd_info->mutex);
+
+			reset_wp = z->wp != z->start;
+		} else {
+			reset_wp = (td->o.td_ddir & TD_DDIR_WRITE) &&
+					z->wp % min_bs != 0;
+		}
 		if (reset_wp) {
 			dprint(FD_ZBD, "%s: resetting zone %u\n",
 			       f->file_name,
@@ -1304,58 +1370,6 @@ static bool zbd_open_zone(struct thread_data *td, const struct io_u *io_u,
 out:
 	pthread_mutex_unlock(&f->zbd_info->mutex);
 	return res;
-}
-
-/* The caller must hold f->zbd_info->mutex */
-static void zbd_close_zone(struct thread_data *td, const struct fio_file *f,
-			   unsigned int open_zone_idx)
-{
-	uint32_t zone_idx;
-	struct fio_zone_info *z;
-
-	assert(open_zone_idx < td->o.num_open_zones);
-	zone_idx = td->o.open_zones[open_zone_idx];
-	z = &f->zbd_info->zone_info[zone_idx];
-	if (z->pending_ios && td_write(td) &&
-		!td_ioengine_flagged(td, FIO_SYNCIO))
-		io_u_quiesce(td);
-	if (g_max_open_zones && td->o.issue_zone_finish &&
-			(td->o.zrwa_alloc || (td->o.finish_zone_pct < 100))) {
-		// Handle the case where fio is started and all zones in the range
-		// are in full state. fio MO is to select a zone, open it, if it is
-		// full then close it (this func), select next zone and open it and
-		// send it to zbd_adjust_block(), which then checks if the zone is
-		// full and if so resets the zone, and starts writing to it. In case
-		// where all zones are full at start and issue_zone_finish is enabled
-		// fio cannot close a zone properly as zone finish is done in the
-		// IO completion path and IOs have not started in this case, so fio
-		// cannot close the zone here in this func and num_open_zones is not
-		// decremented so it cannot open a new zone.
-		if ((z->cond == ZBD_ZONE_COND_FULL) && z->open) {
-			goto close;
-		}
-
-		return;
-	}
-close:
-
-	/* check if zone was already closed */
-	if ((td->o.open_zones[open_zone_idx] == zone_idx) && (td->o.num_open_zones > 0)){
-
-		dprint(FD_ZBD, "%s(%s): closing zone %d\n", __func__, f->file_name,
-		   zone_idx);
-
-		memmove(td->o.open_zones + open_zone_idx,
-			td->o.open_zones + open_zone_idx + 1,
-			(ZBD_MAX_OPEN_ZONES - (open_zone_idx + 1)) *
-			sizeof(td->o.open_zones[0]));
-		td->o.num_open_zones--;
-		g_open_zones--;
-		f->zbd_info->zone_info[zone_idx].open = 0;
-		z->cond = ZBD_ZONE_COND_FULL;
-	}
-
-	return;
 }
 
 /* Anything goes as long as it is not a constant. */
