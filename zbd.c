@@ -1424,7 +1424,7 @@ static struct fio_zone_info *zbd_convert_to_open_zone(struct thread_data *td,
 
 	assert(is_valid_offset(f, io_u->offset));
 
-	if (td->o.job_max_open_zones) {
+	if (td->o.max_open_zones || td->o.job_max_open_zones) {
 		zone_idx = td->o.open_zones[pick_random_zone_idx(f, io_u, td->o.num_open_zones)];
 	} else {
 		zone_idx = zbd_zone_idx(f, io_u->offset);
@@ -1449,7 +1449,7 @@ static struct fio_zone_info *zbd_convert_to_open_zone(struct thread_data *td,
 
 		zone_lock(td, f, z);
 		pthread_mutex_lock(&f->zbd_info->mutex);
-		if (td->o.job_max_open_zones == 0)
+		if (td->o.max_open_zones == 0 && td->o.job_max_open_zones == 0)
 			goto examine_zone;
 		if (td->o.num_open_zones == 0) {
 			pthread_mutex_unlock(&f->zbd_info->mutex);
@@ -1506,7 +1506,7 @@ if ((z->wp + min_bs <= z->start + z->capacity) &&
 		pthread_mutex_unlock(&f->zbd_info->mutex);
 		goto out;
 	}
-	if (td->o.job_max_open_zones) {
+	if (td->o.max_open_zones || td->o.job_max_open_zones) {
 		zbd_close_zone(td, f, open_zone_idx);
 		/* Cover case where max zones are open and one is closed here but device
 		 * has not marked zone as full.  This causes io errors if io is
