@@ -211,7 +211,7 @@ out:
 	return ret;
 }
 
-int blkzoned_reset_wp(struct thread_data *td, const struct fio_file *f,
+int blkzoned_reset_wp(struct thread_data *td, struct fio_file *f,
 		      uint64_t offset, uint64_t length)
 {
 	struct blk_zone_range zr = {

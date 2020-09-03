@@ -105,7 +105,7 @@ int zbd_report_zones(struct thread_data *td, struct fio_file *f,
  * Reset the write pointer of all zones in the range @offset...@offset+@length.
  * Returns 0 upon success and a negative error code upon failure.
  */
-int zbd_reset_wp(struct thread_data *td, const struct fio_file *f,
+int zbd_reset_wp(struct thread_data *td, struct fio_file *f,
 		 uint64_t offset, uint64_t length)
 {
 	int ret;
@@ -970,7 +970,7 @@ static bool is_zone_open(const struct thread_data *td, unsigned int zone_idx)
  *
  * Returns 0 upon success and a negative error code upon failure.
  */
-static int zbd_reset_range(struct thread_data *td, const struct fio_file *f,
+static int zbd_reset_range(struct thread_data *td, struct fio_file *f,
 			   uint64_t offset, uint64_t length)
 {
 	uint32_t zone_idx_b, zone_idx_e;
@@ -1025,7 +1025,7 @@ static unsigned int zbd_zone_nr(struct zoned_block_device_info *zbd_info,
  *
  * Returns 0 upon success and a negative error code upon failure.
  */
-static int zbd_reset_zone(struct thread_data *td, const struct fio_file *f,
+static int zbd_reset_zone(struct thread_data *td, struct fio_file *f,
 			  struct fio_zone_info *z)
 {
 	dprint(FD_ZBD, "%s: resetting wp of zone %u\n", f->file_name,
@@ -1779,9 +1779,7 @@ static void zbd_put_io(struct thread_data *td, const struct io_u *io_u)
 {
 	const struct fio_file *f = io_u->file;
 	struct zoned_block_device_info *zbd_info = f->zbd_info;
-
 	struct fio_zone_info *z;
-	uint32_t zone_idx;
 	int ret;
 	uint32_t zone_idx, zone_q_io_idx;
     uint64_t finish_limit = 0;
@@ -1983,7 +1981,7 @@ enum fio_ddir zbd_adjust_ddir(struct thread_data *td, struct io_u *io_u,
  */
 enum io_u_action zbd_adjust_block(struct thread_data *td, struct io_u *io_u)
 {
-	const struct fio_file *f = io_u->file;
+	struct fio_file *f = io_u->file;
 	uint32_t zone_idx_b;
 	struct fio_zone_info *zb, *zl, *orig_zb;
 	uint32_t orig_len = io_u->buflen;
