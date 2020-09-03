@@ -1982,7 +1982,7 @@ void setup_zbd_zone_mode(struct thread_data *td, struct io_u *io_u)
 	 */
 	if (z->capacity < f->zbd_info->zone_size && !td_random(td) &&
 	    ddir == DDIR_WRITE &&
-	    f->last_pos[ddir] >= zbd_zone_capacity_end(z)) {
+	    f->last_pos[ddir] >= zbd_zone_end(z)) {
 		dprint(FD_ZBD,
 		       "%s: Jump from zone capacity limit to zone end:"
 		       " (%lu -> %lu) for zone %u (%ld)\n",
