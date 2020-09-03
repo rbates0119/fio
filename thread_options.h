@@ -36,7 +36,7 @@ enum fio_memtype {
 #define BSSPLIT_MAX	64
 #define ZONESPLIT_MAX	256
 
-#define ZBD_MAX_OPEN_ZONES	2048
+#define ZBD_MAX_OPEN_ZONES	4096
 
 struct bssplit {
 	uint64_t bs;
