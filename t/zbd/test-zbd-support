@@ -77,19 +77,11 @@ check_reset_count() {
     eval "[ '$reset_count' '$1' '$2' ]"
 }
 
-# If zone size and zone capacity are different.
-check_zs_zc_mismatch() {
-    if [ $zone_size == $zone_capacity ]; then
-	return 0
-    else
-	if [ $zone_capacity == 0 ]; then
-	    zone_capacity=$zone_size
-	    echo "Setting zone capacity to $zone_size"
-	    return 1
-	fi
-	is_zs_zc_mismatch=1
-	return 1
-    fi
+# Check log for failed assertions and crashes. Without these checks,
+# a test can succeed even when these events happen, but it must fail.
+check_log() {
+     [ ! -f "${logfile}.${1}" ] && return 0
+     ! grep -q -e "Assertion " -e "Aborted " "${logfile}.${1}"
 }
 
 # Whether or not $1 (/dev/...) is a SCSI device.
@@ -1029,7 +1021,7 @@ trap 'intr=1' SIGINT
 for test_number in "${tests[@]}"; do
     rm -f "${logfile}.${test_number}"
     echo -n "Running test $(printf "%02d" $test_number) ... "
-    if eval "test$test_number"; then
+    if eval "test$test_number" && check_log $test_number; then
 	status="PASS"
 	cc_status="${green}${status}${end}"
 	((passed++))
