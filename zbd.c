@@ -1781,6 +1781,8 @@ static void zbd_put_io(struct thread_data *td, const struct io_u *io_u)
 	struct zoned_block_device_info *zbd_info = f->zbd_info;
 
 	struct fio_zone_info *z;
+	uint32_t zone_idx;
+	int ret;
 	uint32_t zone_idx, zone_q_io_idx;
     uint64_t finish_limit = 0;
 
@@ -1861,7 +1863,8 @@ static void zbd_put_io(struct thread_data *td, const struct io_u *io_u)
 							(io_u->ddir == DDIR_WRITE))
 		zbd_finish_full_zone(td, z, io_u, true);
 
-	assert(pthread_mutex_unlock(&z->mutex) == 0);
+	ret = pthread_mutex_unlock(&z->mutex);
+	assert(ret == 0);
 	zbd_check_swd(f);
 }
 
