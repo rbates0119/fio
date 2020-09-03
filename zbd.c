@@ -460,7 +460,6 @@ static int parse_zone_info(struct thread_data *td, struct fio_file *f)
 	struct fio_zone_info *p;
 	uint64_t zone_size, offset;
 	struct zoned_block_device_info *zbd_info = NULL;
-	pthread_mutexattr_t attr;
 	int i, j, ns_id = 0, bs, ret = 0;
 	void *zone_q_buf = NULL;
 	struct nvme_id_ns_zns_2 *ns_zns = NULL;
