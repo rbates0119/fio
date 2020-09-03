@@ -788,8 +788,7 @@ void zbd_free_zone_info(struct fio_file *f)
 {
 	uint32_t refcount;
 
-	if (!f->zbd_info)
-		return;
+	assert(f->zbd_info);
 
 	pthread_mutex_lock(&f->zbd_info->mutex);
 	refcount = --f->zbd_info->refcount;
@@ -853,7 +852,7 @@ static uint32_t get_divisor(uint32_t overwrite_percentage) {
 	}
 }
 
-int zbd_init(struct thread_data *td)
+int zbd_setup_files(struct thread_data *td)
 {
 	struct fio_file *f = NULL;
 	int i, start_z_idx, nr_zones;
