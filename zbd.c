@@ -790,8 +790,10 @@ static int zbd_create_zone_info(struct thread_data *td, struct fio_file *f)
 		return -EINVAL;
 	}
 
-	if (ret == 0)
+	if (ret == 0) {
 		f->zbd_info->model = zbd_model;
+		f->zbd_info->max_open_zones = td->o.max_open_zones;
+	}
 	return ret;
 }
 
@@ -940,6 +942,25 @@ int zbd_setup_files(struct thread_data *td)
 							td->o.io_size, td->zbd_ow_blk_count);
 	}
 
+	for_each_file(td, f, i) {
+		struct zoned_block_device_info *zbd = f->zbd_info;
+
+		if (!zbd)
+			continue;
+
+		zbd->max_open_zones = zbd->max_open_zones ?: ZBD_MAX_OPEN_ZONES;
+
+		if (td->o.max_open_zones > 0 &&
+		    zbd->max_open_zones != td->o.max_open_zones) {
+			log_err("Different 'max_open_zones' values\n");
+			return 1;
+		}
+		if (zbd->max_open_zones > ZBD_MAX_OPEN_ZONES) {
+			log_err("'max_open_zones' value is limited by %u\n", ZBD_MAX_OPEN_ZONES);
+			return 1;
+		}
+	}
+
 	return 0;
 }
 
@@ -961,7 +982,8 @@ static bool is_zone_open(const struct thread_data *td, unsigned int zone_idx)
 {
 	int i;
 
-	assert(g_max_open_zones <= ARRAY_SIZE(td->o.open_zones));
+	assert(td->o.job_max_open_zones == 0 || td->num_open_zones <= td->o.job_max_open_zones);
+	assert(td->o.job_max_open_zones <= td->o.max_open_zones);
 	assert(td->o.num_open_zones <= td->o.max_open_zones);
 
 	for (i = 0; i < td->o.num_open_zones; i++)
@@ -1343,10 +1365,6 @@ static bool zbd_open_zone(struct thread_data *td, const struct io_u *io_u,
 	if (g_finish_zone)
 		z->finish_pct = td->o.finish_zone_pct;
 
-	/* Zero means no limit */
-	if (!g_max_open_zones)
-		return true;
-
 	if (td_random(td) &&
 		(td->o.num_open_zones >= td->o.max_open_zones))
 		return false;
@@ -1356,7 +1374,9 @@ static bool zbd_open_zone(struct thread_data *td, const struct io_u *io_u,
 	if (is_zone_open(td, zone_idx))
 		goto out;
 	res = false;
-	if (td->o.num_open_zones >= g_max_open_zones)
+	/* Zero means no limit */
+	if (td->o.job_max_open_zones > 0 &&
+	    td->num_open_zones >= td->o.job_max_open_zones)
 		goto out;
 	// Issue an explicit open with ZRWAA bit set via io-passtrhu.
 	if (td->o.zrwa_alloc) {
@@ -1408,7 +1428,7 @@ static struct fio_zone_info *zbd_convert_to_open_zone(struct thread_data *td,
 
 	assert(is_valid_offset(f, io_u->offset));
 
-	if (g_max_open_zones) {
+	if (td->o.job_max_open_zones) {
 		zone_idx = td->o.open_zones[pick_random_zone_idx(f, io_u, td->o.num_open_zones)];
 	} else {
 		zone_idx = zbd_zone_idx(f, io_u->offset);
@@ -1433,7 +1453,7 @@ static struct fio_zone_info *zbd_convert_to_open_zone(struct thread_data *td,
 
 		zone_lock(td, f, z);
 		pthread_mutex_lock(&f->zbd_info->mutex);
-		if (g_max_open_zones == 0)
+		if (td->o.job_max_open_zones == 0)
 			goto examine_zone;
 		if (td->o.num_open_zones == 0) {
 			pthread_mutex_unlock(&f->zbd_info->mutex);
@@ -1490,8 +1510,7 @@ if ((z->wp + min_bs <= z->start + z->capacity) &&
 		pthread_mutex_unlock(&f->zbd_info->mutex);
 		goto out;
 	}
-
-	if (g_max_open_zones) {
+	if (td->o.job_max_open_zones) {
 		zbd_close_zone(td, f, open_zone_idx);
 		/* Cover case where max zones are open and one is closed here but device
 		 * has not marked zone as full.  This causes io errors if io is

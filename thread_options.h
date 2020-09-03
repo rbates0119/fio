@@ -345,6 +345,7 @@ struct thread_options {
 	/* Parameters that affect zonemode=zbd */
 	unsigned int read_beyond_wp;
 	int max_open_zones;
+	unsigned int job_max_open_zones;
 	int num_open_zones;
 	uint32_t open_zones[ZBD_MAX_OPEN_ZONES];
 	bool fill_empty_zones_first;
