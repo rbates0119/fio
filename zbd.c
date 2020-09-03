@@ -1954,6 +1954,25 @@ void setup_zbd_zone_mode(struct thread_data *td, struct io_u *io_u)
 	assert(td->o.zone_size);
 
 	/*
+	 * When the zone capacity is smaller than the zone size and the I/O is
+	 * sequential write, skip to zone end if the latest position is at the
+	 * zone capacity limit.
+	 */
+	if (z->capacity < f->zbd_info->zone_size && !td_random(td) &&
+	    ddir == DDIR_WRITE &&
+	    f->last_pos[ddir] >= zbd_zone_capacity_end(z)) {
+		dprint(FD_ZBD,
+		       "%s: Jump from zone capacity limit to zone end:"
+		       " (%llu -> %llu) for zone %u (%llu)\n",
+		       f->file_name, (unsigned long long) f->last_pos[ddir],
+		       (unsigned long long) zbd_zone_end(z),
+		       zbd_zone_nr(f->zbd_info, z),
+		       (unsigned long long) z->capacity);
+		td->io_skip_bytes += zbd_zone_end(z) - f->last_pos[ddir];
+		f->last_pos[ddir] = zbd_zone_end(z);
+	}
+
+	/*
 	 * zone_skip is valid only for sequential workloads.
 	 */
 	if (td_random(td) || !td->o.zone_skip)
