@@ -173,8 +173,14 @@ static bool zbd_zone_full(const struct fio_file *f, struct fio_zone_info *z,
 	return  full;
 }
 
-static void zone_lock(struct thread_data *td, struct fio_zone_info *z)
+static void zone_lock(struct thread_data *td, struct fio_file *f, struct fio_zone_info *z)
 {
+	struct zoned_block_device_info *zbd = f->zbd_info;
+	uint32_t nz = z - zbd->zone_info;
+
+	/* A thread should never lock zones outside its working area. */
+	assert(f->min_zone <= nz && nz < f->max_zone);
+
 	/*
 	 * Lock the io_u target zone. The zone will be unlocked if io_u offset
 	 * is changed or when io_u completes and zbd_put_io() executed.
@@ -308,6 +314,9 @@ static bool zbd_verify_sizes(void)
 					 (unsigned long long) new_end - f->file_offset);
 				f->io_size = new_end - f->file_offset;
 			}
+
+			f->min_zone = zbd_zone_idx(f, f->file_offset);
+			f->max_zone = zbd_zone_idx(f, f->file_offset + f->io_size);
 		}
 	}
 
@@ -1114,7 +1123,7 @@ static int zbd_reset_zones(struct thread_data *td, struct fio_file *f,
 
 		if (!zbd_zone_swr(z))
 			continue;
-		zone_lock(td, z);
+		zone_lock(td, f, z);
 		if (all_zones) {
 			unsigned int i;
 
@@ -1237,14 +1246,12 @@ static void zbd_init_swd(struct fio_file *f)
 void zbd_file_reset(struct thread_data *td, struct fio_file *f)
 {
 	struct fio_zone_info *zb, *ze;
-	uint32_t zone_idx_e;
 
 	if (!f->zbd_info || !td_write(td))
 		return;
 
-	zb = &f->zbd_info->zone_info[zbd_zone_idx(f, f->file_offset)];
-	zone_idx_e = zbd_zone_idx(f, f->file_offset + f->io_size);
-	ze = &f->zbd_info->zone_info[zone_idx_e];
+	zb = &f->zbd_info->zone_info[f->min_zone];
+	ze = &f->zbd_info->zone_info[f->max_zone];
 	zbd_init_swd(f);
 
 	/*
@@ -1391,7 +1398,7 @@ static struct fio_zone_info *zbd_convert_to_open_zone(struct thread_data *td,
 						      struct io_u *io_u)
 {
 	const uint32_t min_bs = td->o.min_bs[io_u->ddir];
-	const struct fio_file *f = io_u->file;
+	struct fio_file *f = io_u->file;
 	struct fio_zone_info *z;
 	unsigned int open_zone_idx = -1;
 	unsigned int full_zone_idx = 0xFFFF;
@@ -1406,6 +1413,10 @@ static struct fio_zone_info *zbd_convert_to_open_zone(struct thread_data *td,
 	} else {
 		zone_idx = zbd_zone_idx(f, io_u->offset);
 	}
+	if (zone_idx < f->min_zone)
+		zone_idx = f->min_zone;
+	else if (zone_idx >= f->max_zone)
+		zone_idx = f->max_zone - 1;
 	dprint(FD_ZBD, "%s(%s): starting from zone %d id = %d, zones = %d (offset 0x%llX, buflen %lld)\n",
 	       __func__, f->file_name, zone_idx, td->thread_number, td->o.num_open_zones, io_u->offset, io_u->buflen);
 
@@ -1420,11 +1431,7 @@ static struct fio_zone_info *zbd_convert_to_open_zone(struct thread_data *td,
 
 		z = &f->zbd_info->zone_info[zone_idx];
 
-		if (pthread_mutex_trylock(&z->mutex) != 0) {
-			if (!td_ioengine_flagged(td, FIO_SYNCIO))
-				io_u_quiesce(td);
-			pthread_mutex_lock(&z->mutex);
-		}
+		zone_lock(td, f, z);
 		pthread_mutex_lock(&f->zbd_info->mutex);
 		if (g_max_open_zones == 0)
 			goto examine_zone;
@@ -1451,8 +1458,7 @@ static struct fio_zone_info *zbd_convert_to_open_zone(struct thread_data *td,
 			if (tmp_idx >= td->o.num_open_zones)
 				tmp_idx = 0;
 			tmpz = td->o.open_zones[tmp_idx];
-
-			if (is_valid_offset(f, f->zbd_info->zone_info[tmpz].start)) {
+			if (f->min_zone <= tmpz && tmpz < f->max_zone) {
 				open_zone_idx = tmp_idx;
 				goto found_candidate_zone;
 			}
@@ -1528,18 +1534,18 @@ open_zone:
 				z = &f->zbd_info->zone_info[zone_idx];
 				if ((z->cond == ZBD_ZONE_COND_FULL) && (full_zone_idx == 0xFFFF)) full_zone_idx = zone_idx;
 			} else {
-				z++;
+			z++;
 			}
 			if (!is_valid_offset(f, z->start)) {
 				/* Wrap-around. */
-				zone_idx = zbd_zone_idx(f, f->file_offset);
+				zone_idx = f->min_zone;
 				z = &f->zbd_info->zone_info[zone_idx];
 			}
 			assert(is_valid_offset(f, z->start));
 			/* if last iteration and have not found not open or non-full zone then try to find one sequentially */
 			if (find_random && (i==1) && (z->open || (z->cond == ZBD_ZONE_COND_FULL))) {
 				/* Wrap-around. */
-				zone_idx = zbd_zone_idx(f, f->file_offset);
+				zone_idx = f->min_zone;
 				z = &f->zbd_info->zone_info[zone_idx];
 				find_random = false;
 				i = f->io_size / f->zbd_info->zone_size;
@@ -1562,7 +1568,7 @@ open_zone:
 
 		z = &f->zbd_info->zone_info[zone_idx];
 
-		pthread_mutex_lock(&z->mutex);
+		zone_lock(td, f, z);
 		if ((z->wp + min_bs <= z->start + z->capacity) &&
 				is_valid_offset(f, z->start) && (z->cond != ZBD_ZONE_COND_FULL)) {
 			goto out;
@@ -1616,7 +1622,7 @@ zbd_find_zone(struct thread_data *td, struct io_u *io_u,
 	      struct fio_zone_info *zb, struct fio_zone_info *zl)
 {
 	const uint32_t min_bs = td->o.min_bs[io_u->ddir];
-	const struct fio_file *f = io_u->file;
+	struct fio_file *f = io_u->file;
 	struct fio_zone_info *z1, *z2;
 	const struct fio_zone_info *const zf =
 		&f->zbd_info->zone_info[zbd_zone_idx(f, f->file_offset)];
@@ -1627,7 +1633,7 @@ zbd_find_zone(struct thread_data *td, struct io_u *io_u,
 	 */
 	for (z1 = zb + 1, z2 = zb - 1; z1 < zl || z2 >= zf; z1++, z2--) {
 		if (z1 < zl && z1->cond != ZBD_ZONE_COND_OFFLINE) {
-			zone_lock(td, z1);
+			zone_lock(td, f, z1);
 			if (z1->start + min_bs <= z1->wp)
 				return z1;
 			pthread_mutex_unlock(&z1->mutex);
@@ -1636,7 +1642,7 @@ zbd_find_zone(struct thread_data *td, struct io_u *io_u,
 		}
 		if (td_random(td) && z2 >= zf &&
 		    z2->cond != ZBD_ZONE_COND_OFFLINE) {
-			zone_lock(td, z2);
+			zone_lock(td, f, z2);
 			if (z2->start + min_bs <= z2->wp)
 				return z2;
 			pthread_mutex_unlock(&z2->mutex);
@@ -2039,11 +2045,7 @@ enum io_u_action zbd_adjust_block(struct thread_data *td, struct io_u *io_u)
 	 * process the currently queued I/Os so that I/O progress is made and
 	 * zones unlocked.
 	 */
-	if (pthread_mutex_trylock(&zb->mutex) != 0) {
-		if (!td_ioengine_flagged(td, FIO_SYNCIO))
-			io_u_quiesce(td);
-		pthread_mutex_lock(&zb->mutex);
-	}
+	zone_lock(td, f, zb);
 
 	switch (io_u->ddir) {
 	case DDIR_READ:
