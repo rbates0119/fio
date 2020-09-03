@@ -1126,8 +1126,7 @@ static int zbd_reset_zones(struct thread_data *td, struct fio_file *f,
 
 			reset_wp = z->wp != z->start;
 		} else {
-			reset_wp = (td->o.td_ddir & TD_DDIR_WRITE) &&
-					z->wp % min_bs != 0;
+			reset_wp = z->wp % min_bs != 0;
 		}
 		if (reset_wp) {
 			dprint(FD_ZBD, "%s: resetting zone %u\n",
@@ -1239,7 +1238,7 @@ void zbd_file_reset(struct thread_data *td, struct fio_file *f)
 	struct fio_zone_info *zb, *ze;
 	uint32_t zone_idx_e;
 
-	if (!f->zbd_info)
+	if (!f->zbd_info || !td_write(td))
 		return;
 
 	zb = &f->zbd_info->zone_info[zbd_zone_idx(f, f->file_offset)];
@@ -1252,7 +1251,8 @@ void zbd_file_reset(struct thread_data *td, struct fio_file *f)
 	 * writing any data to avoid that a zone reset has to be issued while
 	 * writing data, which causes data loss.
 	 */
-	if (td->o.verify != VERIFY_NONE &&	(td->o.td_ddir & TD_DDIR_WRITE) &&
+		zbd_reset_zones(td, f, zb, ze, true);
+	if (td->o.verify != VERIFY_NONE &&
 			td->runstate != TD_VERIFYING)
 		zbd_reset_zones(td, f, zb, ze, true);
 	zbd_reset_write_cnt(td, f);
