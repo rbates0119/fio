@@ -2112,11 +2112,9 @@ enum io_u_action zbd_adjust_block(struct thread_data *td, struct io_u *io_u)
 
 	switch (io_u->ddir) {
 	case DDIR_READ:
-		if (td->runstate == TD_VERIFYING) {
-			if (td_write(td)) {
-				zb = zbd_replay_write_order(td, io_u, zb);
-				goto accept;
-			}
+		if (td->runstate == TD_VERIFYING && td_write(td)) {
+			zb = zbd_replay_write_order(td, io_u, zb);
+			goto accept;
 		}
 		/*
 		 * Check that there is enough written data in the zone to do an
