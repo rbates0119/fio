@@ -456,6 +456,7 @@ struct thread_data {
 
 	uint32_t	zbd_ow_blk_count;	 	/* overwrites to be done in blocks per zone */
 	uint32_t    zbd_ow_blk_interval;	/* interval between overwrites */
+	uint64_t    zbd_finish_capacity;    /* capacity of zone when finish_zone_pct is specified */
 
 #ifdef CONFIG_CUDA
 	/*
