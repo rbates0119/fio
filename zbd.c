@@ -1452,6 +1452,106 @@ static uint32_t pick_random_zone_idx(const struct fio_file *f,
 	return io_u->offset * open_zones / f->real_file_size;
 }
 
+int zbd_finish_full_zone(struct thread_data *td, struct fio_zone_info *z,
+			const struct io_u *io_u, bool zone_io_finish)
+{
+    int i, ret = 0, open_zone_idx = -1;
+    struct fio_file *f = io_u->file;
+    uint32_t zone_idx;
+
+    zone_idx = zbd_zone_idx(f, io_u->offset);
+    if (g_finish_zone && zone_io_finish) {
+		dprint(FD_ZBD, "%s(%s): Issuing BLKFINISHZONE on zone %d\n", __func__,
+				f->file_name, zone_idx);
+		ret = zbd_issue_finish(td, f, z->start, f->zbd_info->zone_size);
+		if (ret < 0)
+			perror("Issuing finish failed with: ");
+		if (g_ow)
+			z->ow_count = 0;
+
+		z->cond = ZBD_ZONE_COND_FULL;
+		z->last_io = 0;
+		z->io_q_count = 0;
+
+		for (i = 0; i < td->o.num_open_zones; i++)
+			if (td->o.open_zones[i] == zone_idx)
+				open_zone_idx = i;
+
+		/* check if zone was already closed */
+		if (open_zone_idx != -1) {
+
+			assert(open_zone_idx < td->o.num_open_zones);
+
+			memmove(td->o.open_zones + open_zone_idx,
+				td->o.open_zones + open_zone_idx + 1,
+				(ZBD_MAX_OPEN_ZONES - (open_zone_idx + 1)) *
+				sizeof(td->o.open_zones[0]));
+			td->o.num_open_zones--;
+			td->num_open_zones--;
+			f->zbd_info->zone_info[zone_idx].open = 0;
+		}
+    }
+    return ret;
+}
+
+/**
+ * zbd_end_zone_io - update zone status at command completion
+ * @io_u: I/O unit
+ * @z: zone info pointer
+ *
+ * If the write command made the zone full, close it.
+ *
+ * The caller must hold z->mutex.
+ */
+static void zbd_end_zone_io(struct thread_data *td, const struct io_u *io_u,
+			    struct fio_zone_info *z)
+{
+	const struct fio_file *f = io_u->file;
+	int i, open_count = 0;
+    uint64_t finish_limit = z->capacity;
+
+    if (io_u->ddir == DDIR_WRITE  && td->o.issue_zone_finish) {
+    	if (z->finish_pct > 0)	{
+    		finish_limit = (z->capacity * z->finish_pct) / 100;
+    	}
+		if (((io_u->offset + io_u->buflen) >= (z->start + finish_limit)) &&
+				((io_u->offset + io_u->buflen) <= (z->start + z->capacity))) {
+			z->last_io = ZONE_LAST_IO_COMPLETED;
+		}
+		if (!z->io_q_count && z->last_io == ZONE_LAST_IO_COMPLETED &&
+								(io_u->ddir == DDIR_WRITE))
+			zbd_finish_full_zone(td, z, io_u, true);
+	} else {
+		if (io_u->ddir == DDIR_WRITE &&
+			io_u->offset + io_u->buflen >= zbd_zone_capacity_end(z)) {
+
+			pthread_mutex_lock(&f->zbd_info->mutex);
+			zbd_close_zone(td, f, z - f->zbd_info->zone_info);
+			/* Cover case where max zones are open and one is closed here but device
+			 * has not marked zone as full.  This causes io errors if io is
+			 * started on a new zone too soon.  Get number of open zones from device
+			 * until less than max open zones
+			 */
+
+			if ((td->num_open_zones >= g_mar) && !td->o.issue_zone_finish) {
+				i=0;
+				open_count = zbd_get_open_count(f->fd, g_nsid);
+				io_u_quiesce(td);
+				while ((open_count > g_mar) && i < 150) {
+					usec_sleep(td,10);
+					open_count = zbd_get_open_count(f->fd, g_nsid);
+					i++;
+				}
+				assert(td->num_open_zones <= g_mar);
+				dprint(FD_ZBD, "%s(%s): id = %d, open zones = %d, i = %d\n",
+					  __func__, f->file_name, td->thread_number, open_count, i);
+			}
+
+			pthread_mutex_unlock(&f->zbd_info->mutex);
+		}
+	}
+}
+
 /*
  * Modify the offset of an I/O unit that does not refer to an open zone such
  * that it refers to an open zone. Close an open zone and open a new zone if
@@ -1559,12 +1659,11 @@ examine_zone:
 
 open_other_zone:
 	/* Check if number of open zones reaches one of limits. */
-	wait_zone_close =  (!td->o.issue_zone_finish &&
-		(td->o.num_open_zones == f->max_zone - f->min_zone ||
+	wait_zone_close =  ((td->o.num_open_zones == (f->max_zone - f->min_zone)) ||
 		(td->o.max_open_zones &&
 		td->o.num_open_zones == td->o.max_open_zones) ||
 		(td->o.job_max_open_zones &&
-		 td->o.num_open_zones == td->o.job_max_open_zones)));
+		 td->o.num_open_zones == td->o.job_max_open_zones));
 
 	pthread_mutex_unlock(&f->zbd_info->mutex);
 
@@ -1580,10 +1679,11 @@ open_other_zone:
 		io_u_quiesce(td);
 	}
 
-	if (z->cond == ZBD_ZONE_COND_FULL)
-		zbd_close_zone(td, f, z - f->zbd_info->zone_info);
+	if (zbd_zone_full(f, z, min_bs)) {
+		zbd_end_zone_io(td, io_u, z);
+	}
 
-	/* Zone 'z' is full, so try to open a new zone. */
+	/* Try to open a new zone. */
 
     if ((g_max_open_zones > 0) && (td->o.num_open_zones < td->o.max_open_zones)) {
 
@@ -1713,107 +1813,6 @@ zbd_find_zone(struct thread_data *td, struct io_u *io_u,
 	dprint(FD_ZBD, "%s: adjusting random read offset failed\n",
 	       f->file_name);
 	return NULL;
-}
-
-int zbd_finish_full_zone(struct thread_data *td, struct fio_zone_info *z,
-			const struct io_u *io_u, bool zone_io_finish)
-{
-    int i, ret = 0, open_zone_idx = -1;
-    struct fio_file *f = io_u->file;
-    uint32_t zone_idx;
-
-    zone_idx = zbd_zone_idx(f, io_u->offset);
-    if (g_finish_zone && zone_io_finish) {
-		dprint(FD_ZBD, "%s(%s): Issuing BLKFINISHZONE on zone %d\n", __func__,
-				f->file_name, zone_idx);
-		ret = zbd_issue_finish(td, f, z->start, f->zbd_info->zone_size);
-		if (ret < 0)
-			perror("Issuing finish failed with: ");
-		if (g_ow)
-			z->ow_count = 0;
-
-		z->cond = ZBD_ZONE_COND_FULL;
-		z->last_io = 0;
-		z->io_q_count = 0;
-
-		for (i = 0; i < td->o.num_open_zones; i++)
-			if (td->o.open_zones[i] == zone_idx)
-				open_zone_idx = i;
-
-		/* check if zone was already closed */
-		if (open_zone_idx != -1) {
-
-			assert(open_zone_idx < td->o.num_open_zones);
-
-			memmove(td->o.open_zones + open_zone_idx,
-				td->o.open_zones + open_zone_idx + 1,
-				(ZBD_MAX_OPEN_ZONES - (open_zone_idx + 1)) *
-				sizeof(td->o.open_zones[0]));
-			td->o.num_open_zones--;
-			td->num_open_zones--;
-			f->zbd_info->zone_info[zone_idx].open = 0;
-		}
-    }
-    return ret;
-}
-
-/**
- * zbd_end_zone_io - update zone status at command completion
- * @io_u: I/O unit
- * @z: zone info pointer
- *
- * If the write command made the zone full, close it.
- *
- * The caller must hold z->mutex.
- */
-static void zbd_end_zone_io(struct thread_data *td, const struct io_u *io_u,
-			    struct fio_zone_info *z)
-{
-	const struct fio_file *f = io_u->file;
-	int i, open_count = 0;
-    uint64_t finish_limit = z->capacity;
-
-    if (io_u->ddir == DDIR_WRITE  && td->o.issue_zone_finish) {
-    	if (z->finish_pct > 0)	{
-    		finish_limit = (z->capacity * z->finish_pct) / 100;
-    	}
-		if (((io_u->offset + io_u->buflen) >= (z->start + finish_limit)) &&
-				((io_u->offset + io_u->buflen) <= (z->start + z->capacity))) {
-			z->last_io = ZONE_LAST_IO_COMPLETED;
-		}
-		if (!z->io_q_count && z->last_io == ZONE_LAST_IO_COMPLETED &&
-								(io_u->ddir == DDIR_WRITE)) {
-			zbd_finish_full_zone(td, z, io_u, true);
-		}
-	} else {
-		if (io_u->ddir == DDIR_WRITE &&
-			io_u->offset + io_u->buflen >= zbd_zone_capacity_end(z)) {
-
-			pthread_mutex_lock(&f->zbd_info->mutex);
-			zbd_close_zone(td, f, z - f->zbd_info->zone_info);
-			/* Cover case where max zones are open and one is closed here but device
-			 * has not marked zone as full.  This causes io errors if io is
-			 * started on a new zone too soon.  Get number of open zones from device
-			 * until less than max open zones
-			 */
-
-			if ((td->num_open_zones >= g_mar) && !td->o.issue_zone_finish) {
-				i=0;
-				open_count = zbd_get_open_count(f->fd, g_nsid);
-				io_u_quiesce(td);
-				while ((open_count > g_mar) && i < 150) {
-					usec_sleep(td,10);
-					open_count = zbd_get_open_count(f->fd, g_nsid);
-					i++;
-				}
-				assert(td->num_open_zones <= g_mar);
-				dprint(FD_ZBD, "%s(%s): id = %d, open zones = %d, i = %d\n",
-					  __func__, f->file_name, td->thread_number, open_count, i);
-			}
-
-			pthread_mutex_unlock(&f->zbd_info->mutex);
-		}
-	}
 }
 
 /**
@@ -2237,7 +2236,6 @@ enum io_u_action zbd_adjust_block(struct thread_data *td, struct io_u *io_u)
 		if (io_u->buflen > f->zbd_info->zone_size)
 			goto eof;
 		if (!zbd_open_zone(td, io_u, zone_idx_b)) {
-			dprint(FD_ZBD,"zbd_adjust_block open zone false = %d\n", zone_idx_b);
 			pthread_mutex_unlock(&zb->mutex);
 			zb = zbd_convert_to_open_zone(td, io_u);
 			if (!zb) {
