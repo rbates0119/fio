@@ -17,7 +17,7 @@ extern int blkzoned_report_zones(struct thread_data *td,
 extern int blkzoned_reset_wp(struct thread_data *td, const struct fio_file *f,
 				uint64_t offset, uint64_t length);
 extern char *read_file(const char *path);
-extern int zbd_get_open_count(int fd, int nsid);
+extern int zbd_get_open_count(int fd, int nsid, int implicit);
 extern bool zbd_identify_ns(struct thread_data *td,
 		struct fio_file *f, void *ns, void *ns_zns, int nsid);
 extern int zbd_get_nsid(struct fio_file *f);
@@ -59,7 +59,7 @@ static inline int blkzoned_reset_wp(struct thread_data *td, const struct fio_fil
 	return -EIO;
 }
 
-static inline int zbd_get_open_count(int fd, int nsid)
+static inline int zbd_get_open_count(int fd, int nsid, int implicit)
 {
 	return -EIO;
 }

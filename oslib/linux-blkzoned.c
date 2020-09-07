@@ -248,7 +248,7 @@ int blkzoned_reset_wp(struct thread_data *td, struct fio_file *f,
 }
 
 
-int zbd_get_open_count(int fd, int nsid)
+int zbd_get_open_count(int fd, int nsid, int implicit)
 {
 	int ret;
 	int log_len;
@@ -269,7 +269,7 @@ int zbd_get_open_count(int fd, int nsid)
 	cmd.nsid       = nsid;
 	cmd.cdw10      = 0;
 	cmd.cdw11      = 0;
-	cmd.cdw13      = 2 << 8;
+	cmd.cdw13      = (2 + implicit) << 8;
 	cmd.addr       = (__u64)(uintptr_t)buff;
 	cmd.data_len   = log_len;
 
