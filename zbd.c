@@ -2353,14 +2353,17 @@ enum io_u_action zbd_adjust_block(struct thread_data *td, struct io_u *io_u)
 			assert(td->o.verify == VERIFY_NONE);
 			/* If filling empty zones first attempt to open an empty zone rather
 			 * than reset current zone*/
-
-			if ((td->o.fill_empty_zones_first) && zbd_zone_full(td, f, zb, min_bs)) {
+			if ((td->o.fill_empty_zones_first) &&
+					(td_random(td) || td->o.perc_rand[DDIR_WRITE] > 0)
+					&& zbd_zone_full(td, f, zb, min_bs)) {
 				if (full_zones(f) <= (f->zbd_info->nr_zones - g_max_open_zones)) {
 					pthread_mutex_unlock(&zb->mutex);
 					zb = zbd_convert_to_open_zone(td, io_u);
 					if (!zb) {
 						if (td->o.time_based) {
-							zb->reset_zone = true;
+							zb = orig_zb;
+							zb->reset_zone = 1;
+							pthread_mutex_lock(&zb->mutex);
 						} else {
 							goto eof;
 						}
