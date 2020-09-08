@@ -181,16 +181,9 @@ static inline uint64_t zbd_zone_capacity_end(struct thread_data *td, const struc
 static bool zbd_zone_full(struct thread_data *td, const struct fio_file *f,
 		struct fio_zone_info *z, uint64_t required)
 {
-	bool full = false;
-
 	assert((required & 511) == 0);
-	full = (zbd_zone_swr(z) &&
-		(z->wp + required > z->start + z->capacity)) || z->cond == ZBD_ZONE_COND_FULL;
-	if (full) z->cond = ZBD_ZONE_COND_FULL;
-
-	return zbd_zone_swr(z) &&
-		z->wp + required > zbd_zone_capacity_end(td, z);
-	return  full;
+	return (zbd_zone_swr(z) &&
+		((z->wp + required > z->start + z->capacity) || z->cond == ZBD_ZONE_COND_FULL));
 }
 
 static void zone_lock(struct thread_data *td, struct fio_file *f, struct fio_zone_info *z)
@@ -550,6 +543,12 @@ static int parse_zone_info(struct thread_data *td, struct fio_file *f)
 					}
 				}
 			}
+//			if (!td_random(td) && td->o.max_open_zones > 1) {
+//				log_err("job 'max_open_zones' value is limited to one by sequential write\n");
+//				ret = -EINVAL;
+//				goto out;
+//			}
+
 			dprint(FD_ZBD, "parse_zone_info: id = %d, max_zones = %d, td->o.ns_id = %d, ns_id = %d\n",
 					td2->thread_number, g_max_open_zones, td2->o.ns_id, ns_id);
 		}
@@ -977,7 +976,7 @@ int zbd_setup_files(struct thread_data *td)
 		}
 		dprint(FD_ZBD, "zbd_init: zone finish capacity = 0x%lX\n", td->zbd_finish_capacity);
 
-//		zbd->max_open_zones = zbd->max_open_zones ?: ZBD_MAX_OPEN_ZONES;
+		zbd->max_open_zones = zbd->max_open_zones ?: ZBD_MAX_OPEN_ZONES;
 
 //		if (td->o.max_open_zones > 0 &&
 //		    zbd->max_open_zones != td->o.max_open_zones) {
@@ -1473,7 +1472,7 @@ int zbd_finish_full_zone(struct thread_data *td, struct fio_zone_info *z,
     uint32_t zone_idx;
 
     zone_idx = zbd_zone_idx(f, io_u->offset);
-    if (g_finish_zone && zone_io_finish) {
+    if (g_finish_zone && zone_io_finish && z->cond != ZBD_ZONE_COND_FULL) {
 		dprint(FD_ZBD, "%s(%s): Issuing BLKFINISHZONE on zone %d\n", __func__,
 				f->file_name, zone_idx);
 		ret = zbd_issue_finish(td, f, z->start, f->zbd_info->zone_size);
@@ -1702,6 +1701,7 @@ examine_zone:
 open_other_zone:
 	/* Check if number of open zones reaches one of limits. */
 	wait_zone_close =  ((td->o.num_open_zones == (f->max_zone - f->min_zone)) ||
+		(!td_random(td) && td->o.max_open_zones && td->o.num_open_zones == 1) ||
 		(td->o.max_open_zones &&
 		td->o.num_open_zones == td->o.max_open_zones) ||
 		(td->o.job_max_open_zones &&
@@ -1717,9 +1717,12 @@ open_other_zone:
 	 */
 	if (wait_zone_close) {
 		if (z->cond != ZBD_ZONE_COND_FULL) {
-//		dprint(FD_ZBD, "%s(%s): io_u_quiesce, full zones = %d, open zones = %d, max_open zones = %d\n",
-//				__func__, f->file_name, full_zones(f), td->o.num_open_zones, td->o.max_open_zones);
+			dprint(FD_ZBD, "%s(%s): io_u_quiesce, full zones = %d, open zones = %d, max_open = %d, io_q_count = %d\n",
+					__func__, f->file_name, full_zones(f), td->o.num_open_zones, td->o.max_open_zones, z->io_q_count);
 			io_u_quiesce(td);
+			if (z->cond != ZBD_ZONE_COND_FULL) {
+				zbd_end_zone_io(td, io_u, z);
+			}
 		}
 	}
 
@@ -2427,8 +2430,8 @@ enum io_u_action zbd_adjust_block(struct thread_data *td, struct io_u *io_u)
 						   td->ts.zrwa_overwrite_bytes += io_u->buflen;
 						   zb->ow_count++;
 						   zb->prev_ow_lba = io_u->offset;
-					       dprint(FD_ZBD,"Issuing overwrite io at offset %llu, z->start= %lu, z->wp= %lu, ow_count = %d\n",
-							       io_u->offset, zb->start, zb->wp, zb->ow_count);
+//					       dprint(FD_ZBD,"Issuing overwrite io at offset %llu, z->start= %lu, z->wp= %lu, ow_count = %d\n",
+//							       io_u->offset, zb->start, zb->wp, zb->ow_count);
 					   }
 				   }
 				}
