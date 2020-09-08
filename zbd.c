@@ -543,11 +543,6 @@ static int parse_zone_info(struct thread_data *td, struct fio_file *f)
 					}
 				}
 			}
-//			if (!td_random(td) && td->o.max_open_zones > 1) {
-//				log_err("job 'max_open_zones' value is limited to one by sequential write\n");
-//				ret = -EINVAL;
-//				goto out;
-//			}
 
 			dprint(FD_ZBD, "parse_zone_info: id = %d, max_zones = %d, td->o.ns_id = %d, ns_id = %d\n",
 					td2->thread_number, g_max_open_zones, td2->o.ns_id, ns_id);
@@ -1107,11 +1102,9 @@ static void zbd_close_zone(struct thread_data *td, const struct fio_file *f,
 		if (td->o.open_zones[open_zone_idx] == zone_idx)
 			break;
 	}
-	if (open_zone_idx == td->o.num_open_zones) {
-		dprint(FD_ZBD, "%s: zone %d is not open\n",
-		       f->file_name, zone_idx);
+	if (open_zone_idx == td->o.num_open_zones)
 		return;
-	}
+
 	assert(open_zone_idx < td->o.num_open_zones);
 	zone_idx = td->o.open_zones[open_zone_idx];
 	z = &f->zbd_info->zone_info[zone_idx];
@@ -1347,8 +1340,8 @@ uint64_t zbd_get_lowest_queued_offset(struct fio_zone_info *z,
 		low_off = z->zone_io_q[i];
 	}
 
-//	dprint(FD_ZBD, "zbd_get_lowest_queued_offset: oldest pending io %lu, io-offset= %lu fio-wp=%lu q-count = %u, diff = %lu\n",
-//			low_off, z->wp, io_offset, z->io_q_count, (io_offset - low_off));
+	dprint(FD_ZBD, "zbd_get_lowest_queued_offset: oldest pending io %lu, io-offset= %lu fio-wp=%lu q-count = %u, diff = %lu\n",
+			low_off, z->wp, io_offset, z->io_q_count, (io_offset - low_off));
 	return low_off;
 }
 
@@ -1523,9 +1516,6 @@ static void zbd_end_zone_io(struct thread_data *td, const struct io_u *io_u,
 	const struct fio_file *f = io_u->file;
 	int ret, i, open_count = 0;
 
-//	dprint(FD_ZBD, "%s(%s): id = %d, offset + len = 0x%llX, cap = 0x%llX\n",
-//		  __func__, f->file_name, td->thread_number, (io_u->offset + io_u->buflen), zbd_zone_capacity_end(td, z));
-
 	if ((io_u->ddir == DDIR_WRITE) &&
 			(io_u->offset + io_u->buflen >= zbd_zone_capacity_end(td, z))) {
 
@@ -1624,8 +1614,8 @@ static struct fio_zone_info *zbd_convert_to_open_zone(struct thread_data *td,
 		zone_idx = f->min_zone;
 	else if (zone_idx >= f->max_zone)
 		zone_idx = f->max_zone - 1;
-//	dprint(FD_ZBD, "%s(%s): starting from zone %d id = %d, zones = %d (offset 0x%llX, buflen %lld)\n",
-//	       __func__, f->file_name, zone_idx, td->thread_number, td->o.num_open_zones, io_u->offset, io_u->buflen);
+	dprint(FD_ZBD, "%s(%s): starting from zone %d id = %d, zones = %d (offset 0x%llX, buflen %lld)\n",
+	       __func__, f->file_name, zone_idx, td->thread_number, td->o.num_open_zones, io_u->offset, io_u->buflen);
 
 	/*
 	 * Since z->mutex is the outer lock and f->zbd_info->mutex the inner
@@ -1786,8 +1776,8 @@ open_other_zone:
 	return NULL;
 
 out:
-//	dprint(FD_ZBD, "%s(%s): returning zone %d, offset = 0x%lX\n", __func__, f->file_name,
-//	       zone_idx, z->start);
+	dprint(FD_ZBD, "%s(%s): returning zone %d, offset = %lu\n", __func__, f->file_name,
+	       zone_idx, z->start);
 	io_u->offset = z->start;
 	return z;
 }
@@ -1893,8 +1883,8 @@ static void zbd_queue_io(struct thread_data *td,
 		z->zone_io_q[z->io_q_count++] = io_u->offset;
 	}
 
-//	dprint(FD_ZBD, "%s: queued I/O (0%llX, 0x%llX) for zone %u, q-len = %u\n",
-//		f->file_name, io_u->offset, io_u->buflen, zone_idx, z->io_q_count);
+	dprint(FD_ZBD, "%s: queued I/O (%llu, %llu) for zone %u, q-len = %u\n",
+		f->file_name, io_u->offset, io_u->buflen, zone_idx, z->io_q_count);
 
 	switch (io_u->ddir) {
 	case DDIR_WRITE:
@@ -1983,16 +1973,16 @@ static void zbd_put_io(struct thread_data *td, const struct io_u *io_u)
 		z->pending_ios--;
 	}
 
-//	dprint(FD_ZBD, "%s: terminate I/O (0x%llX, 0x%llX) for zone %u\n",
-//		f->file_name, io_u->offset, io_u->buflen, zone_idx);
+	dprint(FD_ZBD, "%s: terminate I/O (%llu, %llu) for zone %u\n",
+		f->file_name, io_u->offset, io_u->buflen, zone_idx);
 
 	if (td->o.zrwa_alloc && td->o.dynamic_qd && (io_u->ddir == DDIR_WRITE)) {
 		if (!z->io_q_count) {
 			printf("%s: Error: zone io queue is empty !! offset %lld \n", __func__, io_u->offset);
 			assert(0);
 		}
-//		for (int i = 0; i < z->io_q_count; i++)
-//			dprint(FD_ZBD, "z->zone_io_q[%d] = %lu \n", i, z->zone_io_q[i]);
+		for (int i = 0; i < z->io_q_count; i++)
+			dprint(FD_ZBD, "z->zone_io_q[%d] = %lu \n", i, z->zone_io_q[i]);
 
 		zone_q_io_idx = zbd_get_zone_q_io_idx(z, io_u->offset);
 		if (zone_q_io_idx + 1 == z->io_q_count) {
@@ -2433,8 +2423,8 @@ enum io_u_action zbd_adjust_block(struct thread_data *td, struct io_u *io_u)
 						   td->ts.zrwa_overwrite_bytes += io_u->buflen;
 						   zb->ow_count++;
 						   zb->prev_ow_lba = io_u->offset;
-//					       dprint(FD_ZBD,"Issuing overwrite io at offset %llu, z->start= %lu, z->wp= %lu, ow_count = %d\n",
-//							       io_u->offset, zb->start, zb->wp, zb->ow_count);
+					       dprint(FD_ZBD,"Issuing overwrite io at offset %llu, z->start= %lu, z->wp= %lu, ow_count = %d\n",
+							       io_u->offset, zb->start, zb->wp, zb->ow_count);
 					   }
 				   }
 				}
