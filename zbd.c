@@ -22,7 +22,6 @@
 #include "pshared.h"
 #include "zbd.h"
 
-static int g_finish_zone;
 static int g_nsid;
 static unsigned long long g_commit_gran;
 static int g_exp_commit;
@@ -764,7 +763,6 @@ static int parse_zone_info(struct thread_data *td, struct fio_file *f)
 	f->zbd_info->nr_zones = nr_zones;
 	zbd_info = NULL;
 	ret = 0;
-	g_finish_zone = td->o.issue_zone_finish;
 
 out:
 	sfree(zbd_info);
@@ -1057,6 +1055,8 @@ static int zbd_reset_range(struct thread_data *td, struct fio_file *f,
 		z->dev_wp = z->start;
 		z->verify_block = 0;
 		z->cond = ZBD_ZONE_COND_EMPTY;
+		z->last_io = 0;
+		z->io_q_count = 0;
 		zone_idx_b++;
 		pthread_mutex_unlock(&z->mutex);
 	}
@@ -1145,6 +1145,8 @@ close:
 		td->num_open_zones--;
 		f->zbd_info->zone_info[zone_idx].open = 0;
 		z->cond = ZBD_ZONE_COND_FULL;
+		z->last_io = 0;
+		z->io_q_count = 0;
 	}
 
 	return;
@@ -1399,7 +1401,7 @@ static bool zbd_open_zone(struct thread_data *td, const struct io_u *io_u,
 	if (td->o.verify != VERIFY_NONE && zbd_zone_full(td, f, z, min_bs))
 		return false;
 
-	if (g_finish_zone)
+	if (td->o.issue_zone_finish)
 		z->finish_pct = td->o.finish_zone_pct;
 
 	if (td_random(td) &&
@@ -1465,7 +1467,8 @@ int zbd_finish_full_zone(struct thread_data *td, struct fio_zone_info *z,
     uint32_t zone_idx;
 
     zone_idx = zbd_zone_idx(f, io_u->offset);
-    if (g_finish_zone && zone_io_finish && z->cond != ZBD_ZONE_COND_FULL) {
+
+    if (td->o.issue_zone_finish && zone_io_finish && z->cond != ZBD_ZONE_COND_FULL) {
 		dprint(FD_ZBD, "%s(%s): Issuing BLKFINISHZONE on zone %d\n", __func__,
 				f->file_name, zone_idx);
 		ret = zbd_issue_finish(td, f, z->start, f->zbd_info->zone_size);
