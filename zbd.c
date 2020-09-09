@@ -2322,7 +2322,7 @@ enum io_u_action zbd_adjust_block(struct thread_data *td, struct io_u *io_u)
 					 */
 					if (!td_random(td) || td->o.perc_rand[DDIR_WRITE] == 0) {
 						zone_idx_b++;
-						if (zone_idx_b >= f->zbd_info->nr_zones)
+						if (zone_idx_b >= (f->io_size / f->zbd_info->zone_size))
 							zone_idx_b = 0;
 						zb = &f->zbd_info->zone_info[zone_idx_b];
 						zb->reset_zone = false;
