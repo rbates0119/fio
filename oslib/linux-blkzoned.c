@@ -370,7 +370,7 @@ bool zbd_zone_reset(struct thread_data *td, struct fio_file *f, uint64_t slba, b
 		goto close;
 	}
 
-	dprint(FD_ZBD, "zbd_zone_reset: slba = 0x%lX \n", slba);
+	dprint(FD_ZBD, "zbd_zone_reset: filename = %s slba = 0x%lX, nsid = %d \n", f->file_name, slba, nsid);
 
 	cmd.opcode     = nvme_cmd_zone_mgmt_send;
 	cmd.nsid       = nsid;

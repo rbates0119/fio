@@ -22,13 +22,9 @@
 #include "pshared.h"
 #include "zbd.h"
 
-static int g_nsid;
-static unsigned long long g_commit_gran;
-static int g_exp_commit;
 static int g_ow;
 static unsigned int g_max_open_zones;
 static unsigned int g_mar;
-static bool g_init_done = false;
 
 #define NVME_ZONE_LBA_SHIFT		12
 
@@ -360,8 +356,8 @@ static bool zbd_verify_bs(void)
 		}
 	}
 	// todo: handle bs[0] properly
-	if (td->o.bs[1] > g_commit_gran &&
-			(td->o.bs[1] % g_commit_gran)) {
+	if (td->o.bs[1] > td->o.commit_gran &&
+			(td->o.bs[1] % td->o.commit_gran)) {
 		log_info("Block size should be multiple of commit granularity \n");
 		return false;
 	}
@@ -503,56 +499,48 @@ static int parse_zone_info(struct thread_data *td, struct fio_file *f)
 	if (!ns)
 		goto out;
 
-	if (!g_init_done) {
-		i=0;
+	i=0;
 
-		ns_id = zbd_get_nsid(f);
-		g_nsid = ns_id;
+	ns_id = zbd_get_nsid(f);
 
-		for_each_td(td2, i) {
+	for_each_td(td2, i) {
 
-			if (td2->o.zone_mode==ZONE_MODE_ZBD)
-				g_max_open_zones += td2->o.max_open_zones;
-
-			if (td->o.zrwa_alloc) {
-
-				if (td2->o.ns_id > 0) {
-					if (ns_id > 0)
-					{
-						if (ns_id != td2->o.ns_id) {
-							log_err("fio: %s job parameter ns_id = %u does not match device ns = %u.\n",
-								f->file_name, td2->o.ns_id, ns_id);
-							ret = -EINVAL;
-							goto out;
-						}
-					} else {
-						log_err("fio: %s could not get device namespace id.\n",
-							f->file_name);
-						ret = -EINVAL;
-						goto out;
-					}
-				} else {
-					if (ns_id > 0) {
-						td2->o.ns_id = ns_id;
-					} else {
-						log_err("fio: %s job parameter ns_id = %u does not match device ns = %u.\n",
-								f->file_name, td2->o.ns_id, ns_id);
-						ret = -EINVAL;
-						goto out;
-					}
+		if ((td2->o.zone_mode==ZONE_MODE_ZBD) && (strcmp(td2->o.filename, f->file_name) == 0))
+			g_max_open_zones += td2->o.max_open_zones;
+		if (td2->o.ns_id > 0) {
+			if (ns_id > 0)
+			{
+				if ((ns_id != td2->o.ns_id) && (strcmp(td2->o.filename, f->file_name) == 0)) {
+					log_err("fio: %s, %s, id = %d, job parameter ns_id = %u does not match device ns = %u.\n",
+						f->file_name, td2->o.filename, td2->thread_number, td2->o.ns_id, ns_id);
+					ret = -EINVAL;
+					goto out;
 				}
+			} else {
+				log_err("fio: %s could not get device namespace id.\n",
+					f->file_name);
+				ret = -EINVAL;
+				goto out;
 			}
-
-			dprint(FD_ZBD, "parse_zone_info: id = %d, max_zones = %d, td->o.ns_id = %d, ns_id = %d\n",
-					td2->thread_number, g_max_open_zones, td2->o.ns_id, ns_id);
+		} else {
+			if (ns_id > 0) {
+				td2->o.ns_id = ns_id;
+			} else {
+				log_err("fio: %s job parameter ns_id = %u does not match device ns = %u.\n",
+						f->file_name, td2->o.ns_id, ns_id);
+				ret = -EINVAL;
+				goto out;
+			}
 		}
 
-		if (td->o.reset_all_zones_first) {
-			if (!zbd_zone_reset(td, f, 0x00, true, g_nsid))
-				dprint(FD_ZBD, "parse_zone_info: reset zones failed \n");
-			td->o.reset_all_zones_first = false;
-		}
-		g_init_done = true;
+		dprint(FD_ZBD, "parse_zone_info: id = %d, max_zones = %d, td->o.ns_id = %d, ns_id = %d\n",
+				td2->thread_number, g_max_open_zones, td2->o.ns_id, ns_id);
+	}
+
+	if (td->o.reset_all_zones_first) {
+		if (!zbd_zone_reset(td, f, 0x00, true, td->o.ns_id))
+			dprint(FD_ZBD, "parse_zone_info: reset zones failed \n");
+		td->o.reset_all_zones_first = false;
 	}
 
 	nrz = zbd_report_zones(td, f, 0, zones, ZBD_REPORT_MAX_ZONES);
@@ -617,7 +605,7 @@ static int parse_zone_info(struct thread_data *td, struct fio_file *f)
 			case ZBD_ZONE_COND_IMP_OPEN:
 			case ZBD_ZONE_COND_EXP_OPEN:
 				if (td->o.reset_active_zones_first) {
-					if (!zbd_zone_reset(td, f, p->start, false, g_nsid))	{
+					if (!zbd_zone_reset(td, f, p->start, false, td->o.ns_id))	{
 						td_verror(td, errno, "resetting wp failed");
 						log_err("%s: resetting wp 0x%lX failed (%d).\n",
 							f->file_name, p->start, errno);
@@ -645,7 +633,7 @@ static int parse_zone_info(struct thread_data *td, struct fio_file *f)
 				break;
 			case ZBD_ZONE_COND_CLOSED:
 				if (td->o.reset_active_zones_first) {
-					if (!zbd_zone_reset(td, f, p->start, false, g_nsid))	{
+					if (!zbd_zone_reset(td, f, p->start, false, td->o.ns_id))	{
 						td_verror(td, errno, "resetting wp failed");
 						log_err("%s: resetting wp 0x%lX failed (%d).\n",
 							f->file_name, p->start, errno);
@@ -694,7 +682,7 @@ static int parse_zone_info(struct thread_data *td, struct fio_file *f)
 		}
 	}
 
-	if (zbd_identify_ns(td, f, ns, ns_zns, g_nsid)) {
+	if (zbd_identify_ns(td, f, ns, ns_zns, td->o.ns_id)) {
 		bs = 4096;
 		for (i = 0; i <= ns->nlbaf; i++) {
 			if (ns->flbas & 0xf)
@@ -743,12 +731,14 @@ static int parse_zone_info(struct thread_data *td, struct fio_file *f)
 				goto out;
 			}
 			sprintf(scheduler, "[none]");
+			zbd_verify_scheduler(f->file_name, scheduler);
 			if (!zbd_verify_scheduler(f->file_name, scheduler)) {
 				goto out;
 			}
 		}
 	}  else {
 		sprintf(scheduler, "[mq-deadline]");
+		zbd_verify_scheduler(f->file_name, scheduler);
 		if (!zbd_verify_scheduler(f->file_name, scheduler))
 			goto out;
 	}
@@ -903,8 +893,6 @@ int zbd_setup_files(struct thread_data *td)
 	}
 
 	g_ow = td->o.zrwa_overwrite_percent;
-	g_commit_gran = td->o.commit_gran;
-	g_exp_commit = td->o.exp_commit;
 	if (td->o.exp_commit && td->o.bs[1] > 1048576) {
 		log_err("Block size must be less than 1MB with exp commit\n\n");
 		return 1;
@@ -1519,45 +1507,43 @@ static void zbd_end_zone_io(struct thread_data *td, const struct io_u *io_u,
 	const struct fio_file *f = io_u->file;
 	int ret, i, open_count = 0;
 
-	if ((io_u->ddir == DDIR_WRITE) &&
-			(io_u->offset + io_u->buflen >= zbd_zone_capacity_end(td, z))) {
+	if (io_u->ddir == DDIR_WRITE){
 
 		if (td->o.issue_zone_finish) {
-			z->last_io = ZONE_LAST_IO_COMPLETED;
 
 			if (!z->io_q_count && z->last_io == ZONE_LAST_IO_COMPLETED) {
 
 				ret = zbd_finish_full_zone(td, z, io_u, true);
 				if (ret < 0)
 					zbd_close_zone(td, f, z - f->zbd_info->zone_info);
-			}
 
-			/* Cover case where max zones are open and one is closed here but device
-			 * has not marked zone as full.  This causes io errors if io is
-			 * started on a new zone too soon.  Get number of open zones from device
-			 * until less than max open zones
-			 */
-			dprint(FD_ZBD, "%s(%s): id = %d, open zones = %d\n",
-				  __func__, f->file_name, td->thread_number, td->num_open_zones);
+				/* Cover case where max zones are open and one is closed here but device
+				 * has not marked zone as full.  This causes io errors if io is
+				 * started on a new zone too soon.  Get number of open zones from device
+				 * until less than max open zones
+				 */
+				dprint(FD_ZBD, "%s(%s): id = %d, open zones = %d\n",
+					  __func__, f->file_name, td->thread_number, td->num_open_zones);
 
-			if (td->num_open_zones >= g_mar) {
-				i=0;
-				open_count = zbd_get_open_count(f->fd, g_nsid, td->o.zrwa_alloc);
-				io_u_quiesce(td);
-				while ((open_count > g_mar) && i < 500) {
-					usec_sleep(td,10);
-					open_count = zbd_get_open_count(f->fd, g_nsid, td->o.zrwa_alloc);
+				if (td->num_open_zones >= g_mar) {
+					i=0;
+					open_count = zbd_get_open_count(f->fd, td->o.ns_id, td->o.zrwa_alloc);
+					io_u_quiesce(td);
+					while ((open_count > g_mar) && i < 500) {
+						usec_sleep(td,10);
+						open_count = zbd_get_open_count(f->fd, td->o.ns_id, td->o.zrwa_alloc);
 
-					i++;
+						i++;
+					}
+					dprint(FD_ZBD, "%s(%s): id = %d, open count = %d, open zones = %d, i = %d\n",
+						  __func__, f->file_name, td->thread_number, open_count, td->num_open_zones, i);
+					assert(td->num_open_zones <= g_mar + 1);
 				}
-				dprint(FD_ZBD, "%s(%s): id = %d, open count = %d, open zones = %d, i = %d\n",
-					  __func__, f->file_name, td->thread_number, open_count, td->num_open_zones, i);
-				assert(td->num_open_zones <= g_mar + 1);
+
+				pthread_mutex_unlock(&f->zbd_info->mutex);
 			}
 
-			pthread_mutex_unlock(&f->zbd_info->mutex);
-
-		} else {
+		} else if (io_u->offset + io_u->buflen >= zbd_zone_capacity_end(td, z)) {
 
 			pthread_mutex_lock(&f->zbd_info->mutex);
 			zbd_close_zone(td, f, z - f->zbd_info->zone_info);
@@ -1569,11 +1555,11 @@ static void zbd_end_zone_io(struct thread_data *td, const struct io_u *io_u,
 
 			if ((td->num_open_zones >= g_mar) && !td->o.issue_zone_finish) {
 				i=0;
-				open_count = zbd_get_open_count(f->fd, g_nsid, td->o.zrwa_alloc);
+				open_count = zbd_get_open_count(f->fd, td->o.ns_id, td->o.zrwa_alloc);
 				io_u_quiesce(td);
 				while ((open_count > g_mar) && i < 500) {
 					usec_sleep(td,10);
-					open_count = zbd_get_open_count(f->fd, g_nsid, td->o.zrwa_alloc);
+					open_count = zbd_get_open_count(f->fd, td->o.ns_id, td->o.zrwa_alloc);
 					i++;
 				}
 				assert(td->num_open_zones <= g_mar + 1);
@@ -1603,7 +1589,7 @@ static struct fio_zone_info *zbd_convert_to_open_zone(struct thread_data *td,
 	unsigned int full_zone_idx = 0xFFFF;
 	uint32_t zone_idx, new_zone_idx;
 	int i = 0;
-	bool wait_zone_close;
+	bool wait_zone_close, try_again = true;
 	bool find_random = (td_random(td) && td->o.perc_rand[DDIR_WRITE] > 0);
 
 	assert(is_valid_offset(f, io_u->offset));
@@ -1692,36 +1678,17 @@ examine_zone:
 	}
 
 open_other_zone:
-	/* Check if number of open zones reaches one of limits. */
-	wait_zone_close =  ((td->o.num_open_zones == (f->max_zone - f->min_zone)) ||
-		(!td_random(td) && td->o.max_open_zones && td->o.num_open_zones == 1) ||
-		(td->o.max_open_zones &&
-		td->o.num_open_zones == td->o.max_open_zones) ||
-		(td->o.job_max_open_zones &&
-		 td->o.num_open_zones == td->o.job_max_open_zones));
 
 	pthread_mutex_unlock(&f->zbd_info->mutex);
 
     /* Only z->mutex is held. */
 
-	/*
-	 * When number of open zones reaches to one of limits, wait for
-	 * zone close before opening a new zone.
-	 */
-	if (wait_zone_close) {
-		if (z->cond != ZBD_ZONE_COND_FULL) {
-			dprint(FD_ZBD, "%s(%s): io_u_quiesce, full zones = %d, open zones = %d, max_open = %d, io_q_count = %d\n",
-					__func__, f->file_name, full_zones(f), td->o.num_open_zones, td->o.max_open_zones, z->io_q_count);
-			io_u_quiesce(td);
-			if (z->cond != ZBD_ZONE_COND_FULL) {
-				zbd_end_zone_io(td, io_u, z);
-			}
-		}
-	}
-
 	/* Try to open a new zone. */
 
     if ((g_max_open_zones > 0) && (td->o.num_open_zones < td->o.max_open_zones)) {
+
+    	dprint(FD_ZBD, "%s(%s): open another zone, open zones = %d\n", __func__,
+    	       f->file_name, td->o.num_open_zones);
 
 		srand(time(NULL));
 		for (i = f->io_size / f->zbd_info->zone_size; i > 0; i--) {
@@ -1772,14 +1739,41 @@ open_other_zone:
 		}
 		pthread_mutex_lock(&f->zbd_info->mutex);
 	}
+
+	/* Did not open an existing zone.
+	 * Check if number of open zones reached one of limits.
+	 */
+	wait_zone_close =  ((td->o.num_open_zones == (f->max_zone - f->min_zone)) ||
+		(!td_random(td) && td->o.max_open_zones && td->o.num_open_zones == 1) ||
+		(td->o.max_open_zones &&
+		td->o.num_open_zones == td->o.max_open_zones) ||
+		(td->o.job_max_open_zones &&
+		 td->o.num_open_zones == td->o.job_max_open_zones));
+
+	/*
+	 * When number of open zones reaches to one of limits, wait for
+	 * zone close before opening a new zone.
+	 */
+	if (wait_zone_close) {
+		if (z->cond != ZBD_ZONE_COND_FULL) {
+			dprint(FD_ZBD, "%s(%s): io_u_quiesce, full zones = %d, open zones = %d, max_open = %d, io_q_count = %d\n",
+					__func__, f->file_name, full_zones(f), td->o.num_open_zones, td->o.max_open_zones, z->io_q_count);
+			io_u_quiesce(td);
+			if (try_again) {
+				try_again = false;
+				goto open_other_zone;
+			}
+		}
+	}
+
 	pthread_mutex_unlock(&f->zbd_info->mutex);
 	pthread_mutex_unlock(&z->mutex);
-	dprint(FD_ZBD, "%s(%s): did not open another zone, id = %d, zone = %d, zone_idx = %d\n", __func__,
-	       f->file_name, td->thread_number, zone_idx, i);
+	dprint(FD_ZBD, "%s(%s): did not open another zone, id = %d, zone = %d, zone_idx = %d, open zones = %d\n", __func__,
+	       f->file_name, td->thread_number, zone_idx, i, td->o.num_open_zones);
 	return NULL;
 
 out:
-	dprint(FD_ZBD, "%s(%s): returning zone %d, offset = %lu\n", __func__, f->file_name,
+	dprint(FD_ZBD, "%s(%s): returning zone %d, offset = 0x%lX\n", __func__, f->file_name,
 	       zone_idx, z->start);
 	io_u->offset = z->start;
 	return z;
@@ -1886,7 +1880,7 @@ static void zbd_queue_io(struct thread_data *td,
 		z->zone_io_q[z->io_q_count++] = io_u->offset;
 	}
 
-	dprint(FD_ZBD, "%s: queued I/O (%llu, %llu) for zone %u, q-len = %u\n",
+	dprint(FD_ZBD, "%s: queued I/O (0x%llX, 0x%llX) for zone %u, q-len = %u\n",
 		f->file_name, io_u->offset, io_u->buflen, zone_idx, z->io_q_count);
 
 	switch (io_u->ddir) {
@@ -1976,7 +1970,7 @@ static void zbd_put_io(struct thread_data *td, const struct io_u *io_u)
 		z->pending_ios--;
 	}
 
-	dprint(FD_ZBD, "%s: terminate I/O (%llu, %llu) for zone %u\n",
+	dprint(FD_ZBD, "%s: terminate I/O (0x%llX, 0x%llX) for zone %u\n",
 		f->file_name, io_u->offset, io_u->buflen, zone_idx);
 
 	if (td->o.zrwa_alloc && td->o.dynamic_qd && (io_u->ddir == DDIR_WRITE)) {
@@ -1984,8 +1978,13 @@ static void zbd_put_io(struct thread_data *td, const struct io_u *io_u)
 			printf("%s: Error: zone io queue is empty !! offset %lld \n", __func__, io_u->offset);
 			assert(0);
 		}
-		for (int i = 0; i < z->io_q_count; i++)
-			dprint(FD_ZBD, "z->zone_io_q[%d] = %lu \n", i, z->zone_io_q[i]);
+		for (int i = 0; i < z->io_q_count; i++) {
+			dprint(FD_ZBD, "z->zone_io_q[%d] = 0x%lX \n", i, z->zone_io_q[i]);
+			if ((z->zone_io_q[i] + io_u->buflen) >= zbd_zone_capacity_end(td, z)) {
+				z->last_io = ZONE_LAST_IO_COMPLETED;
+				dprint(FD_ZBD, "last io = z->zone_io_q[%d] = 0x%llX \n", i, (z->zone_io_q[i] + io_u->buflen));
+			}
+		}
 
 		zone_q_io_idx = zbd_get_zone_q_io_idx(z, io_u->offset);
 		if (zone_q_io_idx + 1 == z->io_q_count) {
@@ -2004,10 +2003,10 @@ static void zbd_put_io(struct thread_data *td, const struct io_u *io_u)
         // If bs >= commit_gran, ex: bs=64K, commmit_gran = 16K, then issue 64/16= 4 commit
         // commands.
 
-	if (g_exp_commit) {
-	    if (io_u->buflen < g_commit_gran) {
-		    if ((io_u->offset + io_u->buflen) >= g_commit_gran &&
-			    !((io_u->offset + io_u->buflen) % g_commit_gran)) {
+	if (td->o.exp_commit) {
+	    if (io_u->buflen < td->o.commit_gran) {
+		    if ((io_u->offset + io_u->buflen) >= td->o.commit_gran &&
+			    !((io_u->offset + io_u->buflen) % td->o.commit_gran)) {
 		    if(!zbd_issue_commit_zone(f, zone_idx,
 		    		(((io_u->offset + io_u->buflen) >> NVME_ZONE_LBA_SHIFT) - 1),
 		    		(z->start >> NVME_ZONE_LBA_SHIFT), td->o.ns_id))
@@ -2015,7 +2014,7 @@ static void zbd_put_io(struct thread_data *td, const struct io_u *io_u)
 							    zone_idx, io_u->offset + io_u->buflen);
 		    }
 	    } else {
-		    //In case io_u->buflen >= g_commit_gran
+		    //In case io_u->buflen >= td->o.commit_gran
 		    if(!zbd_issue_commit_zone(f, zone_idx,
 		    		(((io_u->offset + io_u->buflen) >> NVME_ZONE_LBA_SHIFT) - 1),
 		    		z->start >> NVME_ZONE_LBA_SHIFT, td->o.ns_id))
