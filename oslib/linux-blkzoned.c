@@ -342,8 +342,8 @@ int zbd_get_nsid(struct fio_file *f)
 
 	if (!S_ISBLK(nvme_stat.st_mode)) {
 		log_err("Error: requesting namespace-id from non-block device\n");
-		errno = ENOTBLK;
-		return -errno;
+		err = ENOTBLK;
+		goto close;
 	}
 
 	err = ioctl(fd, NVME_IOCTL_ID);
@@ -363,11 +363,11 @@ bool zbd_zone_reset(struct thread_data *td, struct fio_file *f, uint64_t slba, b
 	struct nvme_passthru_cmd cmd;
 	memset(&cmd, 0, sizeof(cmd));
 
-	fd = open(f->file_name, O_RDONLY | O_LARGEFILE);
+	fd = f->fd;
 	if (fd < 0) {
-		ret = -errno;
-		reply = false;
-		goto close;
+		fd = open(f->file_name, O_RDWR | O_LARGEFILE);
+		if (fd < 0)
+			return false;
 	}
 
 	dprint(FD_ZBD, "zbd_zone_reset: filename = %s slba = 0x%lX, nsid = %d \n", f->file_name, slba, nsid);
@@ -391,15 +391,14 @@ bool zbd_zone_reset(struct thread_data *td, struct fio_file *f, uint64_t slba, b
 	ret = ioctl(fd, NVME_IOCTL_IO_CMD, &cmd);
 
 	if (ret > 0) {
-		perror("zbd_zone_reset failed - ioctl returned:");
-		dprint(FD_ZBD, "zbd_zone_reset failed: slba = 0x%lX \n", slba);
+		perror("zbd_zone_reset failed- ioctl returned: ");
+		dprint(FD_ZBD, "zbd_zone_reset: ret = %d \n", ret);
 		reply =  false;
 	}
 
 	if (all_zones)
 		buf_output_free(&out);
 
-close:
 	close(fd);
 
 	return reply;

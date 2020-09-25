@@ -605,10 +605,10 @@ static int parse_zone_info(struct thread_data *td, struct fio_file *f)
 			case ZBD_ZONE_COND_IMP_OPEN:
 			case ZBD_ZONE_COND_EXP_OPEN:
 				if (td->o.reset_active_zones_first) {
-					if (!zbd_zone_reset(td, f, p->start, false, td->o.ns_id))	{
-						td_verror(td, errno, "resetting wp failed");
+					if (!zbd_zone_reset(td, f, (p->start >> NVME_ZONE_LBA_SHIFT), false, td->o.ns_id))	{
+						td_verror(td, errno, "resetting zone failed");
 						log_err("%s: resetting wp 0x%lX failed (%d).\n",
-							f->file_name, p->start, errno);
+							f->file_name, (p->start >> NVME_ZONE_LBA_SHIFT), errno);
 						ret = -1;
 						goto out;
 					} else {
@@ -634,10 +634,10 @@ static int parse_zone_info(struct thread_data *td, struct fio_file *f)
 				break;
 			case ZBD_ZONE_COND_CLOSED:
 				if (td->o.reset_active_zones_first) {
-					if (!zbd_zone_reset(td, f, p->start, false, td->o.ns_id))	{
+					if (!zbd_zone_reset(td, f, (p->start >> NVME_ZONE_LBA_SHIFT), false, td->o.ns_id))	{
 						td_verror(td, errno, "resetting wp failed");
 						log_err("%s: resetting wp 0x%lX failed (%d).\n",
-							f->file_name, p->start, errno);
+							f->file_name, (p->start >> NVME_ZONE_LBA_SHIFT), errno);
 						ret = -1;
 						goto out;
 					} else {
@@ -712,7 +712,7 @@ static int parse_zone_info(struct thread_data *td, struct fio_file *f)
 		if (td->o.zrwa_alloc) {
 			if (td_write(td) && !td->o.dynamic_qd) {
 				if ((zrwas * bs) <  (td->o.bs[1] * td->o.iodepth)) {
-					log_err("fio: %s iodepth = %d * blocksize = %lld (%lld) is greater than zrwas = %d \n",
+					log_err("fio: %s iodepth = %d * blocksize = 0x%llX (0x%llX) is greater than zrwas = %d \n",
 						f->file_name, td->o.iodepth, td->o.bs[1], (td->o.iodepth * td->o.bs[1]), (zrwas * bs));
 					ret = -EINVAL;
 					goto out;
@@ -1331,7 +1331,7 @@ uint64_t zbd_get_lowest_queued_offset(struct fio_zone_info *z,
 		low_off = z->zone_io_q[i];
 	}
 
-	dprint(FD_ZBD, "zbd_get_lowest_queued_offset: oldest pending io %lu, io-offset= %lu fio-wp=%lu q-count = %u, diff = %lu\n",
+	dprint(FD_ZBD, "zbd_get_lowest_queued_offset: oldest pending io 0x%lX, io-offset= 0x%lX fio-wp=0x%lX q-count = %u, diff = 0x%lX\n",
 			low_off, z->wp, io_offset, z->io_q_count, (io_offset - low_off));
 	return low_off;
 }
@@ -1344,7 +1344,7 @@ unsigned int zbd_can_zrwa_queue_more(struct thread_data *td, const struct io_u *
 	uint32_t zone_idx;
 
 	// For reads no need to do zrwa check
-	if (td_read(td))
+	if (io_u->ddir == DDIR_READ)
 		return 1;
 	// For non-zrwa cases  and no dynamic qd option return 1
 	if ((td->o.zone_mode == ZONE_MODE_NONE) || (!td->o.zrwa_alloc && !td->o.dynamic_qd))
@@ -1879,6 +1879,10 @@ static void zbd_queue_io(struct thread_data *td,
 	if (td->o.zrwa_alloc && td->o.dynamic_qd && (io_u->ddir == DDIR_WRITE)) {
 		assert(z->io_q_count < td->o.iodepth + 1);
 		z->zone_io_q[z->io_q_count++] = io_u->offset;
+		if (io_u->offset >= (z->dev_wp + ZRWA_SIZE_BYTES))
+			z->dev_wp += (io_u->offset - (z->dev_wp + ZRWA_SIZE_BYTES));
+	} else if (io_u->ddir == DDIR_WRITE) {
+		z->dev_wp = io_u->offset;
 	}
 
 	dprint(FD_ZBD, "%s: queued I/O (0x%llX, 0x%llX) for zone %u, q-len = %u\n",
@@ -1976,7 +1980,7 @@ static void zbd_put_io(struct thread_data *td, const struct io_u *io_u)
 
 	if (td->o.zrwa_alloc && td->o.dynamic_qd && (io_u->ddir == DDIR_WRITE)) {
 		if (!z->io_q_count) {
-			printf("%s: Error: zone io queue is empty !! offset %lld \n", __func__, io_u->offset);
+			printf("%s: Error: zone io queue is empty !! offset 0x%llX \n", __func__, io_u->offset);
 			assert(0);
 		}
 		for (int i = 0; i < z->io_q_count; i++) {
@@ -2228,7 +2232,7 @@ enum io_u_action zbd_adjust_block(struct thread_data *td, struct io_u *io_u)
 			zb = zbd_find_zone(td, io_u, zb, zl);
 			if (!zb) {
 				dprint(FD_ZBD,
-				       "%s: zbd_find_zone(%lld, %llu) failed\n",
+				       "%s: zbd_find_zone(0x%llX, 0x%llX) failed\n",
 				       f->file_name, io_u->offset,
 				       io_u->buflen);
 				goto eof;
@@ -2393,6 +2397,8 @@ enum io_u_action zbd_adjust_block(struct thread_data *td, struct io_u *io_u)
 		/* Make writes occur at the write pointer */
 		assert(!zbd_zone_full(td, f, zb, min_bs));
 		io_u->offset = zb->wp;
+       dprint(FD_ZBD,"Adjust_Block: Issuing write to offset 0x%llX, dev_wp = 0x%lX\n",
+						       io_u->offset, zb->dev_wp);
 
 		// If overwrites are set, then issue a write to previously
 		// written location, which is wp - buflen, ensure the offset
@@ -2412,7 +2418,7 @@ enum io_u_action zbd_adjust_block(struct thread_data *td, struct io_u *io_u)
 						   zb->prev_ow_lba = io_u->offset;
 						   zb->ow_count++;
 						   td->ts.zrwa_overwrite_bytes += io_u->buflen;
-					       dprint(FD_ZBD,"Issuing overwrite io to offset %llu\n",
+					       dprint(FD_ZBD,"Issuing overwrite io to offset 0x%llX\n",
 										       io_u->offset);
 					   }
 				   }
@@ -2426,8 +2432,8 @@ enum io_u_action zbd_adjust_block(struct thread_data *td, struct io_u *io_u)
 						   td->ts.zrwa_overwrite_bytes += io_u->buflen;
 						   zb->ow_count++;
 						   zb->prev_ow_lba = io_u->offset;
-					       dprint(FD_ZBD,"Issuing overwrite io at offset %llu, z->start= %lu, z->wp= %lu, ow_count = %d\n",
-							       io_u->offset, zb->start, zb->wp, zb->ow_count);
+					       dprint(FD_ZBD,"Issuing overwrite at offset 0x%llX, start= 0x%lX, wp= 0x%lX, dev_wp = 0x%lX, count = %d, que = %d\n",
+							       io_u->offset, zb->start, zb->wp, zb->dev_wp, zb->ow_count, zb->io_q_count);
 					   }
 				   }
 				}
@@ -2435,7 +2441,7 @@ enum io_u_action zbd_adjust_block(struct thread_data *td, struct io_u *io_u)
 		}
 
 		if (!is_valid_offset(f, io_u->offset)) {
-			dprint(FD_ZBD, "Dropped request with offset %llu\n",
+			dprint(FD_ZBD, "Dropped request with offset 0x%llX\n",
 			       io_u->offset);
 			goto eof;
 		}
