@@ -952,11 +952,13 @@ int zbd_setup_files(struct thread_data *td)
 			continue;
 
 		td->zbd_finish_capacity = f->zbd_info->zone_info[0].capacity;
-		if (td->o.issue_zone_finish && td->o.finish_zone_pct < 100 ) {
-			cap_percent = (f->zbd_info->zone_info[0].capacity * td->o.finish_zone_pct) / 100;
-			td->zbd_finish_capacity = (cap_percent + td->o.bs[1]) & ~(td->o.bs[1] - 1);
+		cap_percent = (f->zbd_info->zone_info[0].capacity * td->o.finish_zone_pct) / 100;
+		td->zbd_finish_capacity = cap_percent & ~(td->o.bs[1] - 1);
+
+		if ((td->zbd_finish_capacity % td->o.bs[1]) != 0) {
+			td->zbd_finish_capacity = ((cap_percent / td->o.bs[1]) * td->o.bs[1]);
 		}
-		dprint(FD_ZBD, "zbd_init: zone finish capacity = 0x%lX\n", td->zbd_finish_capacity);
+		dprint(FD_ZBD, "zbd_init: zone finish capacity = 0x%lX, cap_percent = 0x%llX\n", td->zbd_finish_capacity, cap_percent);
 
 		zbd->max_open_zones = zbd->max_open_zones ?: ZBD_MAX_OPEN_ZONES;
 
@@ -1885,8 +1887,8 @@ static void zbd_queue_io(struct thread_data *td,
 		z->dev_wp = io_u->offset;
 	}
 
-	dprint(FD_ZBD, "%s: queued I/O (0x%llX, 0x%llX) for zone %u, q-len = %u\n",
-		f->file_name, io_u->offset, io_u->buflen, zone_idx, z->io_q_count);
+	dprint(FD_ZBD, "%s: queued I/O (0x%llX, 0x%llX, 0x%lX) for zone %u, q-len = %u\n",
+		f->file_name, io_u->offset, io_u->buflen, z->dev_wp, zone_idx, z->io_q_count);
 
 	switch (io_u->ddir) {
 	case DDIR_WRITE:
