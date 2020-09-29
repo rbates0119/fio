@@ -1822,10 +1822,10 @@ zbd_find_zone(struct thread_data *td, struct io_u *io_u,
 		&f->zbd_info->zone_info[f->min_zone];
 
 	/*
-	 * Skip to the next non-empty zone in case of sequential I/O and to
+	 * Find first non-empty zone in case of sequential I/O and to
 	 * the nearest non-empty zone in case of random I/O.
 	 */
-	for (z1 = zb + 1, z2 = zb - 1; z1 < zl || z2 >= zf; z1++, z2--) {
+	for (z1 = zb, z2 = zb - 1; z1 < zl || z2 >= zf; z1++, z2--) {
 		if (z1 < zl && z1->cond != ZBD_ZONE_COND_OFFLINE) {
 			zone_lock(td, f, z1);
 			if (z1->start + min_bs <= z1->wp)
