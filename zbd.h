@@ -28,9 +28,11 @@ enum zone_last_io_status {
  * struct fio_zone_info - information about a single ZBD zone
  * @start: zone start location (bytes)
  * @wp: zone write pointer location (bytes)
+ * @pending_ios: Number of IO's pending in this zone
  * @capacity: maximum writable location within a zone (bytes)
  * @verify_block: number of blocks that have been verified for this zone
  * @mutex: protects the modifiable members in this structure
+ * @reset_cond: zone reset check condition. only relevant for zone_append.
  * @type: zone type (BLK_ZONE_TYPE_*)
  * @cond: zone state (BLK_ZONE_COND_*)
  * @open: whether or not this zone is currently open. Only relevant if
@@ -39,9 +41,10 @@ enum zone_last_io_status {
  */
 struct fio_zone_info {
 	pthread_mutex_t		mutex;
+	pthread_cond_t		reset_cond;
 	uint64_t		start;
 	uint64_t		wp;
-	uint64_t                dev_wp;
+	uint64_t		dev_wp;
 	uint64_t		capacity;
 	uint32_t		verify_block;
 	uint32_t		ow_count;

@@ -237,6 +237,18 @@ static int fio_libaio_getevents(struct thread_data *td, unsigned int min,
 		} else {
 			r = io_getevents(ld->aio_ctx, actual_min,
 				max, ld->aio_events + events, lt);
+			if (td->o.zone_mode == ZONE_MODE_ZBD) {
+				struct io_event *ev;
+				struct io_u *io_u;
+				for (unsigned event = 0; event < r; event++) {
+					ev = ld->aio_events + event;
+					io_u = container_of(ev->obj, struct io_u, iocb);
+					if (td->o.zone_append
+					    && td->o.do_verify && td->o.verify
+					    && (io_u->ddir == DDIR_WRITE))
+						io_u->ipo->offset = io_u->zone_start_offset + (ev->res2 << 9);
+				}
+			}
 		}
 		if (r > 0)
 			events += r;

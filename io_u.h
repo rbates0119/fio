@@ -95,6 +95,11 @@ struct io_u {
 	};
 
 	/*
+	 * for zone append this is the start offset of the zone.
+	 */
+	unsigned long long zone_start_offset;
+
+	/*
 	 * ZBD mode zbd_queue_io callback: called after engine->queue operation
 	 * to advance a zone write pointer and eventually unlock the I/O zone.
 	 * @q indicates the I/O queue status (busy, queued or completed).
