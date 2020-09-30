@@ -27,6 +27,10 @@
 #define aio_rw_flags __pad2
 #endif
 
+#ifndef RWF_ZONE_APPEND
+#define RWF_ZONE_APPEND	0x00000020
+#endif
+
 static int fio_libaio_commit(struct thread_data *td);
 static int fio_libaio_init(struct thread_data *td);
 
@@ -124,10 +128,14 @@ static int fio_libaio_prep(struct thread_data *td, struct io_u *io_u)
 		if (o->nowait)
 			iocb->aio_rw_flags |= RWF_NOWAIT;
 	} else if (io_u->ddir == DDIR_WRITE) {
-		io_prep_pwrite(iocb, f->fd, io_u->xfer_buf, io_u->xfer_buflen, io_u->offset);
-		if (o->nowait)
-			iocb->aio_rw_flags |= RWF_NOWAIT;
-	} else if (ddir_sync(io_u->ddir))
+		if ((td->o.zone_mode == ZONE_MODE_ZBD) && td->o.zone_append) {
+			io_prep_pwrite(iocb, f->fd, io_u->xfer_buf, io_u->xfer_buflen, io_u->zone_start_offset);
+		}
+		else
+			io_prep_pwrite(iocb, f->fd, io_u->xfer_buf, io_u->xfer_buflen, io_u->offset);
+		if (td->o.zone_append)
+			iocb->aio_rw_flags |= RWF_ZONE_APPEND;
+  	} else if (ddir_sync(io_u->ddir))
 		io_prep_fsync(iocb, f->fd);
 
 	return 0;
