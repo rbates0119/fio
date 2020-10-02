@@ -25,6 +25,7 @@
 static int g_ow;
 static unsigned int g_max_open_zones;
 static unsigned int g_mar;
+static unsigned int g_queued_io;
 
 #define NVME_ZONE_LBA_SHIFT		12
 
@@ -1365,6 +1366,33 @@ unsigned int zbd_can_zrwa_queue_more(struct thread_data *td, const struct io_u *
 	return 0;
 }
 
+bool zbd_fit_in_open_zones_capacity(struct thread_data *td, const struct io_u *io_u)  {
+
+	uint64_t capacity = 0;
+	uint32_t zone_idx;
+	struct fio_zone_info *z;
+	const struct fio_file *f = io_u->file;
+	unsigned long long limit;
+	int i;
+
+	if (td->o.io_size)
+		limit = td->o.io_size;
+	else
+		limit = td->o.size;
+
+	for (i = 0; i < td->o.num_open_zones; i++) {
+		zone_idx = td->o.open_zones[i];
+		z = &f->zbd_info->zone_info[zone_idx];
+		capacity += z->start + td->zbd_finish_capacity - z->wp;
+
+		if (td->o.zrwa_overwrite_percent > 0) {
+			capacity += (((((z->start + td->zbd_finish_capacity - z->wp) / io_u->buflen) / td->zbd_ow_blk_interval) + 1) *  io_u->buflen);
+		}
+	}
+
+	return (capacity >=	(limit - (ddir_rw_sum(td->io_bytes) + (g_queued_io * io_u->buflen))));
+
+}
 /*
  * Open a ZBD zone if it was not yet open. Returns true if either the zone was
  * already open or if opening a new zone is allowed. Returns false if the zone
@@ -1392,17 +1420,24 @@ static bool zbd_open_zone(struct thread_data *td, const struct io_u *io_u,
 	if (td->o.verify != VERIFY_NONE && zbd_zone_full(td, f, z, min_bs))
 		return false;
 
-	if (td->o.issue_zone_finish)
-		z->finish_pct = td->o.finish_zone_pct;
-
 	if (td_random(td) &&
 		(td->o.num_open_zones >= td->o.max_open_zones))
 		return false;
 
-	if ((td->o.fill_empty_zones_first || (!td_random(td) || td->o.perc_rand[DDIR_WRITE] == 0)) &&
-			zbd_zone_full(td, f, z, min_bs))
-		return false;
+	if (td->o.issue_zone_finish) {
+		z->finish_pct = td->o.finish_zone_pct;
+	}
 
+	if ((td->o.fill_empty_zones_first || (!td_random(td) || td->o.perc_rand[DDIR_WRITE] == 0)) &&
+			zbd_zone_full(td, f, z, min_bs)) {
+		/* If nearing the end of the amount of bytes to process
+		 * and the remaining will fit in the open zones then do not
+		 * open another zone.
+		 */
+		if (zbd_fit_in_open_zones_capacity(td, io_u)) {
+			return false;
+		}
+	}
 	pthread_mutex_lock(&f->zbd_info->mutex);
 
 	if (is_zone_open(td, zone_idx)) {
@@ -1884,6 +1919,7 @@ static void zbd_queue_io(struct thread_data *td,
 	if (td->o.zrwa_alloc && td->o.dynamic_qd && (io_u->ddir == DDIR_WRITE)) {
 		assert(z->io_q_count < td->o.iodepth + 1);
 		z->zone_io_q[z->io_q_count++] = io_u->offset;
+		g_queued_io++;
 		if (io_u->offset >= (z->dev_wp + ZRWA_SIZE_BYTES))
 			z->dev_wp += (io_u->offset - (z->dev_wp + ZRWA_SIZE_BYTES));
 	} else if (io_u->ddir == DDIR_WRITE) {
@@ -2007,12 +2043,14 @@ static void zbd_put_io(struct thread_data *td, const struct io_u *io_u)
 		zone_q_io_idx = zbd_get_zone_q_io_idx(z, io_u->offset);
 		if (zone_q_io_idx + 1 == z->io_q_count) {
 			z->io_q_count--;
+			g_queued_io--;
 			z->zone_io_q[zone_q_io_idx] = 0;
 		} else {
 			memmove(z->zone_io_q + zone_q_io_idx,
 				z->zone_io_q + zone_q_io_idx + 1,
 				(z->io_q_count - (zone_q_io_idx + 1)) * sizeof(uint64_t));
 			z->io_q_count--;
+			g_queued_io--;
 		}
 	}
 
@@ -2397,7 +2435,11 @@ enum io_u_action zbd_adjust_block(struct thread_data *td, struct io_u *io_u)
 						zb->reset_zone = true;
 					}
 				} else {
-					zb->reset_zone = true;
+					if (zbd_fit_in_open_zones_capacity(td, io_u)) {
+						zb->reset_zone = false;
+					} else {
+						zb->reset_zone = true;
+					}
 				}
 			} else {
 				zb->reset_zone = true;
