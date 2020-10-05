@@ -1973,7 +1973,6 @@ unlock:
 		if (q == FIO_Q_BUSY) {
 			assert(success);
 		} else {
-			pthread_mutex_unlock(&z->mutex);
 			io_u->zbd_put_io = NULL;
 			ret = pthread_mutex_unlock(&z->mutex);
 			assert(ret == 0);
