@@ -959,6 +959,11 @@ int zbd_setup_files(struct thread_data *td)
 		if ((td->zbd_finish_capacity % td->o.bs[1]) != 0) {
 			td->zbd_finish_capacity = ((cap_percent / td->o.bs[1]) * td->o.bs[1]);
 		}
+		if (td->o.ddir_seq_add) {
+			td->zbd_finish_capacity = (((cap_percent / (td->o.bs[1] + td->o.ddir_seq_add)) *
+					(td->o.bs[1] + td->o.ddir_seq_add)) - td->o.ddir_seq_add);
+		}
+
 		dprint(FD_ZBD, "zbd_init: zone finish capacity = 0x%lX, cap_percent = 0x%llX\n", td->zbd_finish_capacity, cap_percent);
 
 		zbd->max_open_zones = zbd->max_open_zones ?: ZBD_MAX_OPEN_ZONES;
