@@ -27,10 +27,6 @@
 #define aio_rw_flags __pad2
 #endif
 
-#ifndef RWF_ZONE_APPEND
-#define RWF_ZONE_APPEND	0x00000020
-#endif
-
 static int fio_libaio_commit(struct thread_data *td);
 static int fio_libaio_init(struct thread_data *td);
 

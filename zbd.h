@@ -12,6 +12,10 @@
 #include "oslib/blkzoned.h"
 #include "zbd_types.h"
 
+#ifndef RWF_ZONE_APPEND
+#define RWF_ZONE_APPEND        0x00000020
+#endif
+
 struct fio_file;
 
 enum io_u_action {
