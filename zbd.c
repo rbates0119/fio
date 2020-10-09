@@ -1435,6 +1435,9 @@ static bool zbd_open_zone(struct thread_data *td, const struct io_u *io_u,
 
 	if ((td->o.fill_empty_zones_first || (!td_random(td) || td->o.perc_rand[DDIR_WRITE] == 0)) &&
 			zbd_zone_full(td, f, z, min_bs)) {
+		return false;
+	}
+	if (td_random(td) && td->o.fill_empty_zones_first) {
 		/* If nearing the end of the amount of bytes to process
 		 * and the remaining will fit in the open zones then do not
 		 * open another zone.
@@ -1499,7 +1502,8 @@ int zbd_finish_full_zone(struct thread_data *td, struct fio_zone_info *z,
 
     zone_idx = zbd_zone_idx(f, io_u->offset);
 
-    if (td->o.issue_zone_finish && zone_io_finish && z->cond != ZBD_ZONE_COND_FULL) {
+    if ((td->o.issue_zone_finish || z->cond == ZBD_ZONE_COND_EXP_OPEN)	&&
+    		zone_io_finish && z->cond != ZBD_ZONE_COND_FULL) {
 		dprint(FD_ZBD, "%s(%s): Issuing BLKFINISHZONE on zone %d\n", __func__,
 				f->file_name, zone_idx);
 		ret = zbd_issue_finish(td, f, z->start, f->zbd_info->zone_size);
@@ -1646,7 +1650,7 @@ static struct fio_zone_info *zbd_convert_to_open_zone(struct thread_data *td,
 		zone_idx = f->min_zone;
 	else if (zone_idx >= f->max_zone)
 		zone_idx = f->max_zone - 1;
-	dprint(FD_ZBD, "%s(%s): starting from zone %d id = %d, zones = %d (offset 0x%llX, buflen %lld)\n",
+	dprint(FD_ZBD, "%s(%s): starting from zone %d id = %d, zones = %d (offset 0x%llX, buflen 0x%llX)\n",
 	       __func__, f->file_name, zone_idx, td->thread_number, td->o.num_open_zones, io_u->offset, io_u->buflen);
 
 	/*
@@ -1951,8 +1955,6 @@ static void zbd_queue_io(struct thread_data *td,
 			zbd_info->sectors_with_data += zone_end - z->wp;
 		pthread_mutex_unlock(&zbd_info->mutex);
 		z->wp = zone_end;
-		if (td->o.zone_append)
-			z->pending_ios++;
 		break;
 	case DDIR_TRIM:
 		assert(z->wp == z->start);
@@ -1978,7 +1980,6 @@ unlock:
 		if (q == FIO_Q_BUSY) {
 			assert(success);
 		} else {
-			io_u->zbd_put_io = NULL;
 			ret = pthread_mutex_unlock(&z->mutex);
 			assert(ret == 0);
 			if (!success || q != FIO_Q_QUEUED)
@@ -2088,7 +2089,6 @@ static void zbd_put_io(struct thread_data *td, const struct io_u *io_u)
 	if (td->o.zone_append) {
 		pthread_mutex_lock(&z->mutex);
 		if (z->pending_ios > 0) {
-			z->pending_ios--;
 			/*
 			 * Other threads may be waiting for pending I/O's to
 			 * complete for this zone. Notify them.
@@ -2529,7 +2529,8 @@ proceed:
 		// written location, which is wp - buflen, ensure the offset
 		// is greater zone start + buflen, so that the IO are not
 		// sent to previous zone.
-		if (td->o.zrwa_overwrite_percent && td->o.zrwa_alloc) {
+		if ((td->o.zrwa_overwrite_percent && td->o.zrwa_alloc) &&
+				(zb->cond == ZBD_ZONE_COND_EXP_OPEN)) {
 		   // Issue write to a zone until ow_count reaches td->zbd_ow_blk_count
 		   // During finishing a zone, reset ow_count 0
 		   if (zb->ow_count < td->zbd_ow_blk_count &&
