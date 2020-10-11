@@ -1563,30 +1563,6 @@ static void zbd_end_zone_io(struct thread_data *td, const struct io_u *io_u,
 				ret = zbd_finish_full_zone(td, z, io_u, true);
 				if (ret < 0)
 					zbd_close_zone(td, f, z - f->zbd_info->zone_info);
-
-				/* Cover case where max zones are open and one is closed here but device
-				 * has not marked zone as full.  This causes io errors if io is
-				 * started on a new zone too soon.  Get number of open zones from device
-				 * until less than max open zones
-				 */
-				dprint(FD_ZBD, "%s(%s): id = %d, open zones = %d\n",
-					  __func__, f->file_name, td->thread_number, td->num_open_zones);
-
-				if (td->num_open_zones >= g_mar) {
-					i=0;
-					open_count = zbd_get_open_count(f->fd, td->o.ns_id, td->o.zrwa_alloc);
-					io_u_quiesce(td);
-					while ((open_count > g_mar) && i < 500) {
-						usec_sleep(td,10);
-						open_count = zbd_get_open_count(f->fd, td->o.ns_id, td->o.zrwa_alloc);
-
-						i++;
-					}
-					dprint(FD_ZBD, "%s(%s): id = %d, open count = %d, open zones = %d, i = %d\n",
-						  __func__, f->file_name, td->thread_number, open_count, td->num_open_zones, i);
-					assert(td->num_open_zones <= g_mar + 1);
-				}
-
 				pthread_mutex_unlock(&f->zbd_info->mutex);
 			}
 
