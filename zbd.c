@@ -554,7 +554,11 @@ static int parse_zone_info(struct thread_data *td, struct fio_file *f)
 
 	zone_size = zones[0].len;
 	nr_zones = (f->real_file_size + zone_size - 1) / zone_size;
-
+	if (nr_zones != nrz) {
+		dprint(FD_ZBD, "parse_zone_info: num zones = %d, zone log header number of zones = %d\n",
+				nr_zones, nrz);
+		nr_zones = min(nr_zones, nrz);
+	}
 	if (td->o.zone_size == 0) {
 		td->o.zone_size = zone_size;
 	} else if (td->o.zone_size != zone_size) {
@@ -663,8 +667,8 @@ static int parse_zone_info(struct thread_data *td, struct fio_file *f)
 			else
 				set_cond = true;
 			if (j > 0 && p->start != p[-1].start + zone_size) {
-				log_info("%s: invalid zone data\n",
-					 f->file_name);
+				log_info("%s: invalid zone data, start = 0x%lX, start - 1 size = 0x%lX, size = 0x%lX\n",
+					 f->file_name, p->start, p[-1].start, zone_size);
 				ret = -EINVAL;
 				goto out;
 			}
@@ -678,7 +682,7 @@ static int parse_zone_info(struct thread_data *td, struct fio_file *f)
 		if (nrz < 0) {
 			ret = nrz;
 			log_info("fio: report zones (offset %llu) failed for %s (%d).\n",
-			 	 (unsigned long long)offset,
+			 	 (unsigned long long)(offset >> NVME_ZONE_LBA_SHIFT),
 				 f->file_name, -ret);
 			goto out;
 		}
