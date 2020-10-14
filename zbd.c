@@ -1000,13 +1000,16 @@ int full_zones(const struct fio_file *f) {
 }
 
 /* The caller must hold f->zbd_info->mutex. */
-static bool is_zone_open(const struct thread_data *td, unsigned int zone_idx)
+static bool is_zone_open(const struct thread_data *td, unsigned int zone_idx, struct fio_zone_info *z)
 {
 	int i;
 
 	assert(td->o.job_max_open_zones == 0 || td->num_open_zones <= td->o.job_max_open_zones);
 	assert(td->o.job_max_open_zones <= td->o.max_open_zones);
 	assert(td->o.num_open_zones <= td->o.max_open_zones);
+
+	if ((z->cond == ZBD_ZONE_COND_IMP_OPEN) || (z->cond == ZBD_ZONE_COND_EXP_OPEN))
+		return true;
 
 	for (i = 0; i < td->o.num_open_zones; i++)
 		if (td->o.open_zones[i] == zone_idx)
@@ -1452,7 +1455,7 @@ static bool zbd_open_zone(struct thread_data *td, const struct io_u *io_u,
 	}
 	pthread_mutex_lock(&f->zbd_info->mutex);
 
-	if (is_zone_open(td, zone_idx)) {
+	if (is_zone_open(td, zone_idx, z)) {
 		/*
 		 * If the zone is already open and going to be full by writes
 		 * in-flight, handle it as a full zone instead of an open zone.
@@ -1935,6 +1938,8 @@ static void zbd_queue_io(struct thread_data *td,
 			zbd_info->sectors_with_data += zone_end - z->wp;
 		pthread_mutex_unlock(&zbd_info->mutex);
 		z->wp = zone_end;
+		if (td->o.zone_append)
+			z->pending_ios++;
 		break;
 	case DDIR_TRIM:
 		assert(z->wp == z->start);
