@@ -26,6 +26,7 @@ static int g_ow;
 static unsigned int g_max_open_zones;
 static unsigned int g_mar;
 static unsigned int g_queued_io;
+static unsigned int g_rand_seed = 0;
 
 #define NVME_ZONE_LBA_SHIFT		12
 
@@ -863,15 +864,21 @@ static int zbd_init_zone_info(struct thread_data *td, struct fio_file *file)
 static uint32_t get_divisor(uint32_t overwrite_percentage) {
 
 	if (overwrite_percentage >= 50) {
-		return 2;
-	} else if ((overwrite_percentage >= 25) && (overwrite_percentage < 50)) {
 		return 3;
-	} else if ((overwrite_percentage > 10) && (overwrite_percentage < 25)) {
-		return 4;
-	} else if ((overwrite_percentage > 5) && (overwrite_percentage <= 10)) {
+	} else if ((overwrite_percentage >= 25) && (overwrite_percentage < 50)) {
 		return 5;
-	} else {
+	} else if ((overwrite_percentage > 10) && (overwrite_percentage < 25)) {
+		return 8;
+	} else if ((overwrite_percentage > 5) && (overwrite_percentage <= 10)) {
 		return 10;
+	} else if ((overwrite_percentage > 3) && (overwrite_percentage <= 5)) {
+		return 17;
+	} else if (overwrite_percentage == 3) {
+		return 30;
+	} else if (overwrite_percentage == 2) {
+		return 40;
+	} else {
+		return 80;
 	}
 }
 
@@ -2227,6 +2234,7 @@ enum io_u_action zbd_adjust_block(struct thread_data *td, struct io_u *io_u)
 	uint32_t min_bs = td->o.min_bs[io_u->ddir];
 	uint64_t new_len;
 	int64_t range;
+	int rand_value;
 
 	if (!f->zbd_info)
 		return io_u_accept;
@@ -2516,21 +2524,24 @@ proceed:
 		// sent to previous zone.
 		if ((td->o.zrwa_overwrite_percent && td->o.zrwa_alloc) &&
 				(zb->cond == ZBD_ZONE_COND_EXP_OPEN)) {
+			if (g_rand_seed == 0)
+				g_rand_seed = time(NULL);
 		   // Issue write to a zone until ow_count reaches td->zbd_ow_blk_count
 		   // During finishing a zone, reset ow_count 0
 		   if (zb->ow_count < td->zbd_ow_blk_count &&
 				   (io_u->offset >= zb->start + io_u->buflen) &&
 				   io_u->offset >= zb->dev_wp + io_u->buflen) {
 			   if (td->o.zrwa_rand_ow) {
-				   srand(time(NULL));
-				   if (!(rand() % td->o.zrwa_divisor)) {
+				   srand(g_rand_seed++);
+				   rand_value = rand();
+				   if (!(rand_value % td->o.zrwa_divisor)) {
 					   if (zb->prev_ow_lba != (io_u->offset - io_u->buflen)) {
 						   io_u->offset -= io_u->buflen;
 						   zb->prev_ow_lba = io_u->offset;
 						   zb->ow_count++;
 						   td->ts.zrwa_overwrite_bytes += io_u->buflen;
-					       dprint(FD_ZBD,"Issuing overwrite io to offset 0x%llX\n",
-										       io_u->offset);
+					       dprint(FD_ZBD,"Issuing overwrite at offset 0x%llX, start= 0x%lX, wp= 0x%lX, dev_wp = 0x%lX, count = %d, que = %d\n",
+							       io_u->offset, zb->start, zb->wp, zb->dev_wp, zb->ow_count, zb->io_q_count);
 					   }
 				   }
 			   } else {
