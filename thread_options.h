@@ -352,6 +352,7 @@ struct thread_options {
 	int max_open_zones;
 	unsigned int job_max_open_zones;
 	int num_open_zones;
+	int num_zones;
 	uint32_t open_zones[ZBD_MAX_OPEN_ZONES];
 	bool fill_empty_zones_first;
 	uint32_t ns_id;

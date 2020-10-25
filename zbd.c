@@ -309,7 +309,10 @@ static bool zbd_verify_sizes(void)
 				f->io_size -= (new_offset - f->file_offset);
 				f->file_offset = new_offset;
 			}
-			zone_idx = zbd_zone_idx(f, f->file_offset + f->io_size);
+			if (td->o.num_zones > 0)
+				zone_idx = zbd_zone_idx(f, f->file_offset + (td->o.num_zones * td->o.zone_size));
+			else
+				zone_idx = zbd_zone_idx(f, f->file_offset + f->io_size);
 			z = &f->zbd_info->zone_info[zone_idx];
 			new_end = z->start;
 			if ((td->o.td_ddir != TD_DDIR_READ) &&
@@ -319,9 +322,9 @@ static bool zbd_verify_sizes(void)
 						 f->file_name);
 					return false;
 				}
-				log_info("%s: rounded down io_size from %llu to %llu\n",
+				log_info("%s: rounded down io_size from 0x%llX to 0x%llX, id = %d\n",
 					 f->file_name, (unsigned long long) f->io_size,
-					 (unsigned long long) new_end - f->file_offset);
+					 (unsigned long long) new_end - f->file_offset, td->thread_number);
 				f->io_size = new_end - f->file_offset;
 			}
 
@@ -630,6 +633,8 @@ static int parse_zone_info(struct thread_data *td, struct fio_file *f)
 					assert(z->wp <= z->start + zone_size);
 					p->wp = z->wp;
 					p->dev_wp = z->wp;
+					dprint(FD_ZBD, "parse_zone_info: open zone = 0x%lX, wp = 0x%lX\n",
+							z->start, z->wp);
 					if ((g_max_open_zones > 0) && !td->o.reset_all_zones_first) {
 						td->o.open_zones[td->o.num_open_zones++] = j;
 						td->num_open_zones++;
@@ -975,7 +980,8 @@ int zbd_setup_files(struct thread_data *td)
 					(td->o.bs[1] + td->o.ddir_seq_add)) - td->o.ddir_seq_add);
 		}
 
-		dprint(FD_ZBD, "zbd_init: zone finish capacity = 0x%lX, cap_percent = 0x%llX\n", td->zbd_finish_capacity, cap_percent);
+		dprint(FD_ZBD, "zbd_setup_files: zone finish capacity = 0x%lX, cap_percent = 0x%llX, id = %d, \n",
+				td->zbd_finish_capacity, cap_percent, td->thread_number);
 
 		zbd->max_open_zones = zbd->max_open_zones ?: ZBD_MAX_OPEN_ZONES;
 
@@ -1451,15 +1457,15 @@ static bool zbd_open_zone(struct thread_data *td, const struct io_u *io_u,
 			zbd_zone_full(td, f, z, min_bs)) {
 		return false;
 	}
-	if (td_random(td) && td->o.fill_empty_zones_first) {
+//	if (td_random(td) && td->o.fill_empty_zones_first) {
 		/* If nearing the end of the amount of bytes to process
 		 * and the remaining will fit in the open zones then do not
 		 * open another zone.
 		 */
-		if (zbd_fit_in_open_zones_capacity(td, io_u)) {
-			return false;
-		}
-	}
+//		if (zbd_fit_in_open_zones_capacity(td, io_u)) {
+//			return false;
+//		}
+//	}
 	pthread_mutex_lock(&f->zbd_info->mutex);
 
 	if (is_zone_open(td, zone_idx, z)) {
@@ -1565,15 +1571,16 @@ int zbd_finish_full_zone(struct thread_data *td, struct fio_zone_info *z,
 static void zbd_end_zone_io(struct thread_data *td, const struct io_u *io_u,
 			    struct fio_zone_info *z)
 {
-	const struct fio_file *f = io_u->file;
-	int ret, i, open_count = 0;
+	struct fio_file *f = io_u->file;
+	int ret;
 
 	if (io_u->ddir == DDIR_WRITE){
 
 		if (td->o.issue_zone_finish) {
 
 			if (!z->io_q_count && z->last_io == ZONE_LAST_IO_COMPLETED) {
-
+				if (!td_random(td) || td->o.perc_rand[DDIR_WRITE] == 0)
+					zone_lock(td, f, z);
 				ret = zbd_finish_full_zone(td, z, io_u, true);
 				if (ret < 0)
 					zbd_close_zone(td, f, z - f->zbd_info->zone_info);
@@ -1584,26 +1591,6 @@ static void zbd_end_zone_io(struct thread_data *td, const struct io_u *io_u,
 
 			pthread_mutex_lock(&f->zbd_info->mutex);
 			zbd_close_zone(td, f, z - f->zbd_info->zone_info);
-			/* Cover case where max zones are open and one is closed here but device
-			 * has not marked zone as full.  This causes io errors if io is
-			 * started on a new zone too soon.  Get number of open zones from device
-			 * until less than max open zones
-			 */
-
-			if ((td->num_open_zones >= g_mar) && !td->o.issue_zone_finish) {
-				i=0;
-				open_count = zbd_get_open_count(f->fd, td->o.ns_id, td->o.zrwa_alloc);
-				io_u_quiesce(td);
-				while ((open_count > g_mar) && i < 500) {
-					usec_sleep(td,10);
-					open_count = zbd_get_open_count(f->fd, td->o.ns_id, td->o.zrwa_alloc);
-					i++;
-				}
-				assert(td->num_open_zones <= g_mar + 1);
-				dprint(FD_ZBD, "%s(%s): id = %d, open zones = %d, i = %d\n",
-					  __func__, f->file_name, td->thread_number, open_count, i);
-			}
-
 			pthread_mutex_unlock(&f->zbd_info->mutex);
 		}
 	}
@@ -1631,7 +1618,7 @@ static struct fio_zone_info *zbd_convert_to_open_zone(struct thread_data *td,
 
 	assert(is_valid_offset(f, io_u->offset));
 
-	if (td->o.max_open_zones || td->o.job_max_open_zones) {
+	if (find_random && (td->o.max_open_zones || td->o.job_max_open_zones)) {
 		zone_idx = td->o.open_zones[pick_random_zone_idx(f, io_u, td->o.num_open_zones)];
 	} else {
 		zone_idx = zbd_zone_idx(f, io_u->offset);
@@ -1734,9 +1721,10 @@ open_other_zone:
 			if (find_random) {
 				zone_idx = rand() % (uint32_t)(f->io_size / f->zbd_info->zone_size);
 				z = &f->zbd_info->zone_info[zone_idx];
-				if ((z->cond == ZBD_ZONE_COND_FULL) && (full_zone_idx == 0xFFFF)) full_zone_idx = zone_idx;
+				if ((z->cond == ZBD_ZONE_COND_FULL) && (full_zone_idx == 0xFFFF))
+					full_zone_idx = zone_idx;
 			} else {
-			z++;
+				z++;
 			}
 			if (!is_valid_offset(f, z->start)) {
 				/* Wrap-around. */
@@ -1752,7 +1740,7 @@ open_other_zone:
 				find_random = false;
 				i = f->io_size / f->zbd_info->zone_size;
 			}
-			pthread_mutex_lock(&z->mutex);
+			zone_lock(td, f, z);
 			if ((z->open) || (z->cond == ZBD_ZONE_COND_FULL))
 				continue;
 			if (zbd_open_zone(td, io_u, zone_idx))
@@ -1760,7 +1748,7 @@ open_other_zone:
 		}
     }
 	/* Check whether the write fits in any of the already opened zones. */
-	pthread_mutex_lock(&f->zbd_info->mutex);
+	zone_lock(td, f, z);
 	for (i = 0; i < td->o.num_open_zones; i++) {
 		zone_idx = td->o.open_zones[i];
 		open_zone_idx = i;
@@ -2342,6 +2330,10 @@ enum io_u_action zbd_adjust_block(struct thread_data *td, struct io_u *io_u)
 					(full_zones(f) >= (f->zbd_info->nr_zones - g_max_open_zones))) {
 				zb->reset_zone = true;
 			} else {
+				if (!td->o.time_based &&
+						(ddir_rw_sum(td->io_bytes) >= (td->zbd_finish_capacity * (f->max_zone - f->min_zone)))) {
+					goto eof;
+				}
 				pthread_mutex_unlock(&zb->mutex);
 				zb = zbd_convert_to_open_zone(td, io_u);
 				if (!zb) {
@@ -2504,7 +2496,7 @@ proceed:
 		/* Make writes occur at the write pointer */
 		assert(!zbd_zone_full(td, f, zb, min_bs));
 		io_u->offset = zb->wp;
-       dprint(FD_ZBD,"Adjust_Block: Issuing write to offset 0x%llX, dev_wp = 0x%lX\n",
+		dprint(FD_ZBD,"Adjust_Block: Issuing write to offset 0x%llX, dev_wp = 0x%lX\n",
 						       io_u->offset, zb->dev_wp);
 
 		/*

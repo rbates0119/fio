@@ -3482,6 +3482,17 @@ struct fio_option fio_options[FIO_MAX_OPTS] = {
 		.group	= FIO_OPT_G_ZONE,
 	},
 	{
+		.name	= "num_zones",
+		.lname	= "Number of zones to operate on",
+		.type	= FIO_OPT_INT,
+		.off1	= offsetof(struct thread_options, num_zones),
+		.maxval	= ZBD_MAX_OPEN_ZONES,
+		.help	= "Set number of zone to perform io on",
+		.def	= "0",
+		.category = FIO_OPT_C_IO,
+		.group	= FIO_OPT_G_INVALID,
+	},
+	{
 		.name	= "ns_id",
 		.lname	= "Namespace id",
 		.type	= FIO_OPT_INT,
