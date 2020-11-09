@@ -59,6 +59,7 @@ struct fio_zone_info {
 	enum zbd_zone_cond	cond:4;
 	unsigned int		open:1;
 	unsigned int		reset_zone:1;
+	unsigned int		finish_zone:1;
 	unsigned int		io_q_count;
 	uint8_t			last_io;
 	uint64_t		*zone_io_q;
