@@ -179,7 +179,7 @@ static bool zbd_zone_full(struct thread_data *td, const struct fio_file *f,
 {
 	assert((required & 511) == 0);
 	return (zbd_zone_swr(z) &&
-		((z->wp + required >= z->start + z->capacity) || z->cond == ZBD_ZONE_COND_FULL));
+			((z->wp + required >= z->start + td->zbd_finish_capacity) || z->cond == ZBD_ZONE_COND_FULL));
 
 }
 
