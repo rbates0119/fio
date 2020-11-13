@@ -1467,29 +1467,34 @@ static void zbd_end_zone_io(struct thread_data *td, const struct io_u *io_u,
 	int ret;
 
 	if (io_u->ddir == DDIR_WRITE){
-		if (((z->start + z->capacity) - (io_u->offset + io_u->buflen) > 0) &&
-				(zbd_zone_capacity_end(td, z) - (io_u->offset + io_u->buflen)) < io_u->buflen) {
-			io_u_quiesce(td);
-			ret = zbd_finish_full_zone(td, z, io_u, true);
-			assert(ret==0);
+
+		if (td->o.issue_zone_finish || z->finish_zone) {
+
+			if ((!z->io_q_count && z->last_io == ZONE_LAST_IO_COMPLETED) ||
+					((z->finish_zone && z->pending_ios == 0) &&
+					(io_u->offset + io_u->buflen >= zbd_zone_capacity_end(td, z)))) {
+
+				ret = zbd_finish_full_zone(td, z, io_u, true);
+				if (ret < 0)
+					zbd_close_zone(td, f, z - f->zbd_info->zone_info);
+				pthread_mutex_unlock(&f->zbd_info->mutex);
+			}
+
+		} else if (io_u->offset + io_u->buflen >= zbd_zone_capacity_end(td, z)) {
+			pthread_mutex_lock(&f->zbd_info->mutex);
+			zbd_close_zone(td, f, z - f->zbd_info->zone_info);
 			pthread_mutex_unlock(&f->zbd_info->mutex);
 		} else {
+			if ((z->pending_ios == 0) &&
+					((z->start + z->capacity) - (io_u->offset + io_u->buflen) > 0) &&
+					(zbd_zone_capacity_end(td, z) - ((io_u->offset + io_u->buflen)) < io_u->buflen)) {
+				io_u_quiesce(td);
 
-			if (td->o.issue_zone_finish || z->finish_zone) {
+				dprint(FD_ZBD, "%s: zbd_end_zone_io: at capacity (0x%llX, 0x%llX, 0x%lX), q-len = %u\n",
+					f->file_name, io_u->offset, io_u->buflen, z->dev_wp, z->io_q_count);
 
-				if ((!z->io_q_count && z->last_io == ZONE_LAST_IO_COMPLETED) ||
-						((z->finish_zone && z->pending_ios == 0) &&
-						(io_u->offset + io_u->buflen >= zbd_zone_capacity_end(td, z)))) {
-
-					ret = zbd_finish_full_zone(td, z, io_u, true);
-					if (ret < 0)
-						zbd_close_zone(td, f, z - f->zbd_info->zone_info);
-					pthread_mutex_unlock(&f->zbd_info->mutex);
-				}
-
-			} else if (io_u->offset + io_u->buflen >= zbd_zone_capacity_end(td, z)) {
-				pthread_mutex_lock(&f->zbd_info->mutex);
-				zbd_close_zone(td, f, z - f->zbd_info->zone_info);
+				ret = zbd_finish_full_zone(td, z, io_u, true);
+				assert(ret==0);
 				pthread_mutex_unlock(&f->zbd_info->mutex);
 			}
 		}
@@ -1972,6 +1977,9 @@ static void zbd_queue_io(struct thread_data *td,
 	} else if (io_u->ddir == DDIR_WRITE) {
 		z->dev_wp = io_u->offset;
 	}
+
+	dprint(FD_ZBD, "%s: queued I/O (0x%llX, 0x%llX, 0x%lX) for zone %u, q-len = %u\n",
+		f->file_name, io_u->offset, io_u->buflen, z->dev_wp, zone_idx, z->io_q_count);
 
 	switch (io_u->ddir) {
 	case DDIR_WRITE:
@@ -2601,8 +2609,8 @@ proceed:
 		/* Make writes occur at the write pointer */
 		assert(!zbd_zone_full(td, f, zb, 0));
 		io_u->offset = zb->wp;
-//		dprint(FD_ZBD,"Adjust_Block: Issuing write to offset 0x%llX, dev_wp = 0x%lX, bs = 0x%llX, job = %d\n",
-//						       io_u->offset, zb->dev_wp, io_u->buflen, td->thread_number);
+		dprint(FD_ZBD,"Adjust_Block: Issuing write to offset 0x%llX, dev_wp = 0x%lX, bs = 0x%llX, job = %d\n",
+						       io_u->offset, zb->dev_wp, io_u->buflen, td->thread_number);
 
 		/*
 		 * Support zone append for both regular and zoned block
