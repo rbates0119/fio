@@ -2458,7 +2458,7 @@ enum io_u_action zbd_adjust_block(struct thread_data *td, struct io_u *io_u)
 				}
 			}
 		}
-reopen:
+
 		if (!zbd_open_zone(td, io_u, zone_idx_b, false)) {
 			if ((zb->cond == ZBD_ZONE_COND_FULL) &&
 					td->o.time_based && (is_zone_open(td, zone_idx_b)) &&
@@ -2572,14 +2572,7 @@ reset:
 				}
 			}
 
-			if (zb->reset_zone == 1) {
-				if (zbd_reset_zone(td, f, zb, zb->open) < 0)
-					goto eof;
-			} else {
-				log_err("Adjust_Block: reset cleared offset 0x%llX, wp = 0x%lX, bs = 0x%llX, job = %d\n",
-				       io_u->offset, zb->wp, io_u->buflen, td->thread_number);
-				goto reopen;
-			}
+			if (zbd_reset_zone(td, f, zb, zb->open) < 0)
 			zb->reset_zone = 0;
 
 			/* Notify other threads waiting for zone mutex */
