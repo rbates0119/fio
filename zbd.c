@@ -1570,8 +1570,12 @@ static bool zbd_open_zone(struct thread_data *td, const struct io_u *io_u,
 		if ((td->o.max_open_zones > 0) && (td->o.num_open_zones >= td->o.max_open_zones))
 			goto out;
 
-		if ((z->wp + io_u->buflen) > zbd_zone_capacity_end(td, z))
-			goto out;
+//		if ((z->wp + io_u->buflen) > zbd_zone_capacity_end(td, z)) {
+//			dprint(FD_ZBD, "%s(%s): return false 3 - zone = %d, open zones = %d, id = %d, force = %d, caller = %d\n",
+//				  __func__, f->file_name, zone_idx, td->o.num_open_zones, td->thread_number, force_open, caller);
+
+//			goto out;
+//		}
 	}
 
 	 /* Check if number of open zones reached one of limits. */
