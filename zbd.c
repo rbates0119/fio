@@ -2311,8 +2311,6 @@ enum io_u_action zbd_adjust_block(struct thread_data *td, struct io_u *io_u)
 	if (zb->cond != ZBD_ZONE_COND_OFFLINE &&
 	    io_u->ddir == DDIR_READ && td->o.read_beyond_wp) {
 		if (io_u->offset + io_u->buflen <= zb->start + zb->capacity) {
-			dprint(FD_ZBD, "Adjust_Block: %s: accept (0x%llX, 0x%llX)\n",
-			       f->file_name, io_u->offset, io_u->buflen);
 			return io_u_accept;
 		}
 	}
@@ -2344,12 +2342,8 @@ enum io_u_action zbd_adjust_block(struct thread_data *td, struct io_u *io_u)
 		 */
 		range = zb->cond != ZBD_ZONE_COND_OFFLINE ?
 			zb->wp - zb->start : 0;
-		dprint(FD_ZBD, "Adjust_Block: %s: range = 0%lX, (0x%llX, 0x%llX)\n",
-		       f->file_name, range, io_u->offset, io_u->buflen);
 		if (range < min_bs ||
 		    ((!td_random(td)) && (io_u->offset + min_bs > zb->wp))) {
-			dprint(FD_ZBD, "%s: zbd_find_zone(0x%llX, 0x%llX)\n",
-			       f->file_name, io_u->offset, io_u->buflen);
 			pthread_mutex_unlock(&zb->mutex);
 			zl = &f->zbd_info->zone_info[f->max_zone + 1];
 			zb = zbd_find_zone(td, io_u, zb, zl);
@@ -2396,6 +2390,10 @@ enum io_u_action zbd_adjust_block(struct thread_data *td, struct io_u *io_u)
 
 		if (io_u->buflen > f->zbd_info->zone_size)
 			goto eof;
+
+		/* Check if sequential write and have open zone already.
+		 * Then proceed immediately to set offset.
+		 */
 		if (!td_random(td) || td->o.perc_rand[DDIR_WRITE] == 0) {
 			if (td->o.num_open_zones > 0) {
 				zl = &f->zbd_info->zone_info[td->o.open_zones[0]];
@@ -2441,6 +2439,12 @@ enum io_u_action zbd_adjust_block(struct thread_data *td, struct io_u *io_u)
 				}
 			}
 		} else {
+			/* Check if random write and have max_open_zones
+			 * open zone already. Then select a random zone and
+			 * proceed immediately to set offset for write otherwise go
+			 * through normal open and convert to open zone path.
+			 */
+
 			if ((td->o.max_open_zones > 0) && (td->o.num_open_zones == td->o.max_open_zones)) {
 				if (g_rand_seed == 0)
 					g_rand_seed = time(NULL);
@@ -2458,7 +2462,6 @@ enum io_u_action zbd_adjust_block(struct thread_data *td, struct io_u *io_u)
 				}
 			}
 		}
-
 		if (!zbd_open_zone(td, io_u, zone_idx_b, false)) {
 			if ((zb->cond == ZBD_ZONE_COND_FULL) &&
 					td->o.time_based && (is_zone_open(td, zone_idx_b)) &&
@@ -2573,6 +2576,7 @@ reset:
 			}
 
 			if (zbd_reset_zone(td, f, zb, zb->open) < 0)
+				goto eof;
 			zb->reset_zone = 0;
 
 			/* Notify other threads waiting for zone mutex */
