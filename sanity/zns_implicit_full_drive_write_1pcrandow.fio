@@ -1,0 +1,34 @@
+# INI used to do a full drive write with 1 active zone in ZRWA mode + 1 pc overwrites.
+[seq-write_bs128K_qd256]
+name=zc-seq-write
+filename=/dev/nvme1n1
+# After writing a zone the next zone is picked for write.
+# FIO needs to be capable of picking the next zone randomly also possibly by a flag, say choose_random_zones.
+rw=write
+bs=64K
+direct=1
+numjobs=1
+# io_size is calculated as NUM_ZONES_TO_BE_WRITTEN*ZONE_CAPACITY_IN_BYTES.
+#600 Zone capacity in Bytes
+io_size=646200M
+zrwa_alloc=1
+zrwa_rand_ow=1
+#2833 Zone size in Bytes
+# size is calculated as NUM_ZONES_TO_BE_WRITTEN*ZONE_SIZE_IN_BYTES.
+# It should be possible to replace both io_size and size with NUM_ZONES parameter.
+# FIO needs to be capable of picking up Zone size and capacity from Identify parameters.
+#time_based=1
+#runtime=550s
+size=1200G
+zrwa_overwrite_percent=1
+zonemode=zbd
+max_open_zones=1
+ioengine=libaio
+#Low QD set to not violate ZRWA
+iodepth=1
+#cpumask=cpus_allowed
+issue_zone_finish=1
+#exp_commit=1
+commit_gran=16384
+reset_all_zones_first=1
+

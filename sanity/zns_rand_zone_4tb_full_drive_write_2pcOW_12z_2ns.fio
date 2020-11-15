@@ -1,0 +1,44 @@
+# INI is used to do full ZNS (both) write with 12 active zones (random zone selection) and 2pc overwrite.
+[global]
+ioscheduler=none
+# FIO Will choose randomly
+rw=randwrite
+# Will select different sequence of Zone/LBA every time script run
+randrepeat=0
+bs=128K
+direct=1
+numjobs=1
+zrwa_alloc=1
+# 2% Overwrite per Zone
+zrwa_overwrite_percent=2
+zonemode=zbd
+# number of active zones at a time per NS
+max_open_zones=6
+ioengine=libaio
+# bs*iodepth < 1 MB for ZRWA
+iodepth=4
+iodepth_batch_complete_min=4
+issue_zone_finish=1
+#exp_commit=1
+#commit_gran=16384
+
+# Job for first ZNS
+[job-z0]
+name=zc-rand-write0
+filename=/dev/nvme1n1
+# num_of_zones_to_be_written*1077M
+io_size=232100M
+# zone selection range, for full namespace num_of_zones_in_ns*2G
+size=600G
+ns_id=1
+
+# Job for second ZNS
+[job-z1]
+name=zc-rand-write1
+filename=/dev/nvme1n2
+# num_of_zones_to_be_written*1077M
+io_size=232100M
+# zone selection range, for full namespace num_of_zones_in_ns*2G
+size=600G
+ns_id=2
+

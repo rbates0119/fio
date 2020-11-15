@@ -1,0 +1,29 @@
+# INI is used to do full drive write with 12 active zones and 1pc overwrite.
+[seq-write_bs128K_qd256]
+name=zc-seq-write
+filename=/dev/nvme1n1
+# FIO now chooses 12 zones - say Zone A, Zone B .. Zone L.
+# Once these zones are written FIO now writes Zone A+1, Zone B+1 .. Zone L+1.
+# FIO should support a parameter say (choose_random_zones) that lets FIO to choose 12 new random zones
+# instead of incrementing the Zone ID and proceeding.
+rw=randwrite
+bs=64K
+direct=1
+numjobs=1
+io_size=646200M
+zrwa_alloc=1
+#4000/2833 Zone size in Bytes 
+size=1200G
+zrwa_overwrite_percent=1
+zonemode=zbd
+max_open_zones=12
+ioengine=libaio
+# This parameter is at controller level and so the IO's do not saturate the drive.
+# This parameter should be at a zone level so that each zone can be run at max QD.
+#Low QD set to not violate ZRWA
+iodepth=4
+#cpumask=cpus_allowed
+issue_zone_finish=1
+#exp_commit=1
+commit_gran=16384
+reset_active_zones_first=1
