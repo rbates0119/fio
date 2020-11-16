@@ -1476,7 +1476,6 @@ static void zbd_end_zone_io(struct thread_data *td, const struct io_u *io_u,
 				if (ret < 0)
 					zbd_close_zone(td, f, z - f->zbd_info->zone_info);
 				pthread_mutex_unlock(&f->zbd_info->mutex);
-			}
 
 		} else if (io_u->offset + io_u->buflen >= zbd_zone_capacity_end(td, z)) {
 			pthread_mutex_lock(&f->zbd_info->mutex);
