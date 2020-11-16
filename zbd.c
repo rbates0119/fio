@@ -1468,11 +1468,9 @@ static void zbd_end_zone_io(struct thread_data *td, const struct io_u *io_u,
 
 	if (io_u->ddir == DDIR_WRITE){
 
-		if (td->o.issue_zone_finish || z->finish_zone) {
-
-			if ((!z->io_q_count && z->last_io == ZONE_LAST_IO_COMPLETED) ||
-					((z->finish_zone && z->pending_ios == 0) &&
-					(io_u->offset + io_u->buflen >= zbd_zone_capacity_end(td, z)))) {
+		if (((!z->io_q_count && (z->last_io == ZONE_LAST_IO_COMPLETED) && td->o.zrwa_alloc) ||
+				(z->pending_ios == 0)) &&
+				(io_u->offset + io_u->buflen >= zbd_zone_capacity_end(td, z))) {
 
 				ret = zbd_finish_full_zone(td, z, io_u, true);
 				if (ret < 0)
@@ -1569,13 +1567,6 @@ static bool zbd_open_zone(struct thread_data *td, const struct io_u *io_u,
 		/* Zero means no limit */
 		if ((td->o.max_open_zones > 0) && (td->o.num_open_zones >= td->o.max_open_zones))
 			goto out;
-
-//		if ((z->wp + io_u->buflen) > zbd_zone_capacity_end(td, z)) {
-//			dprint(FD_ZBD, "%s(%s): return false 3 - zone = %d, open zones = %d, id = %d, force = %d, caller = %d\n",
-//				  __func__, f->file_name, zone_idx, td->o.num_open_zones, td->thread_number, force_open, caller);
-
-//			goto out;
-//		}
 	}
 
 	 /* Check if number of open zones reached one of limits. */
@@ -1826,6 +1817,7 @@ open_other_zone:
 		open_zone_idx = i;
 		pthread_mutex_unlock(&f->zbd_info->mutex);
 		pthread_mutex_unlock(&z->mutex);
+
 		z = &f->zbd_info->zone_info[zone_idx];
 
 		zone_lock(td, f, z);
@@ -1862,7 +1854,6 @@ open_other_zone:
 
 	pthread_mutex_unlock(&f->zbd_info->mutex);
 	pthread_mutex_unlock(&z->mutex);
-
 	dprint(FD_ZBD, "%s(%s): did not open another zone, id = %d, zone = %d, zone_idx = %d, open zones = %d\n", __func__,
 	       f->file_name, td->thread_number, zone_idx, i, td->o.num_open_zones);
 	return NULL;
@@ -2259,7 +2250,6 @@ enum fio_ddir zbd_adjust_ddir(struct thread_data *td, struct io_u *io_u,
 	 * devices with all empty zones. Overwrite the first I/O direction as
 	 * write to make sure data to read exists.
 	 */
-
 	if (ddir != DDIR_READ || !td_rw(td))
 		return ddir;
 
