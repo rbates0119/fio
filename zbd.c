@@ -1941,8 +1941,8 @@ zbd_find_zone(struct thread_data *td, struct io_u *io_u,
 		if (td_random(td) && z2 >= zf &&
 		    z2->cond != ZBD_ZONE_COND_OFFLINE) {
 			zone_lock(td, f, z2);
-			if ((z2->start + min_bs <= z2->wp) || td->o.read_beyond_wp)
-				return z2;
+			if ((z2->start + min_bs <= z2->wp) ||
+					(td->o.read_beyond_wp && ((io_u->offset + io_u->buflen) < (z2->start + z2->capacity))))
 			pthread_mutex_unlock(&z2->mutex);
 		}
 	}
@@ -2321,9 +2321,6 @@ enum io_u_action zbd_adjust_block(struct thread_data *td, struct io_u *io_u)
 	 */
 	if (zb->cond != ZBD_ZONE_COND_OFFLINE &&
 	    io_u->ddir == DDIR_READ && td->o.read_beyond_wp) {
-		dprint(FD_ZBD, "Adjust_block: zone %d - (0x%llX, 0x%llX), start + cap = 0x%lX, \n",
-				zone_idx_b, io_u->offset, io_u->buflen, (zb->start + zb->capacity));
-
 		if (io_u->offset + io_u->buflen <= zb->start + zb->capacity) {
 			return io_u_accept;
 		}
@@ -2361,8 +2358,6 @@ enum io_u_action zbd_adjust_block(struct thread_data *td, struct io_u *io_u)
 			pthread_mutex_unlock(&zb->mutex);
 			zl = &f->zbd_info->zone_info[f->max_zone + 1];
 			zb = zbd_find_zone(td, io_u, zb, zl);
-			dprint(FD_ZBD, "%s: zbd_find_zone(0x%llX, 0x%llX) returnd zone 0x%lX\n",
-			       f->file_name, io_u->offset, io_u->buflen, zb->start);
 			if (!zb) {
 				dprint(FD_ZBD, "%s: zbd_find_zone(0x%llX, 0x%llX) failed\n",
 				       f->file_name, io_u->offset, io_u->buflen);
