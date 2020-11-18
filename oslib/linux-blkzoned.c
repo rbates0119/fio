@@ -221,6 +221,116 @@ out:
 	return ret;
 }
 
+int zbd_zone_mgmt_report(struct thread_data *td, struct fio_file *f,
+			  uint64_t offset, struct zbd_zone *zones,
+			  unsigned int nr_zones)
+{
+	struct nvme_zone_report_header	*hdr = NULL;
+	struct nvme_zone_log *zone_log;
+	struct zbd_zone *z;
+	unsigned int i;
+	int fd = -1, ret;
+	int log_len;
+	void * buff;
+	uint16_t zone_info_sz;
+	struct nvme_passthru_cmd cmd;
+	memset(&cmd, 0, sizeof(cmd));
+
+	zone_info_sz = sizeof(struct nvme_zone_log);
+	log_len = sizeof(struct nvme_zone_report_header) + (sizeof(struct nvme_zone_log) * nr_zones);
+	buff = calloc(1, log_len);
+	if (!buff) {
+		ret = -ENOMEM;
+		goto out;
+	}
+
+	fd = f->fd;
+	if (fd < 0) {
+		fd = open(f->file_name, O_RDWR | O_LARGEFILE);
+		if (fd < 0)
+			return -errno;
+	}
+
+	cmd.opcode		=  nvme_cmd_zone_mgmt_recv;
+	cmd.nsid		= td->o.ns_id;
+	cmd.cdw10		= offset & 0xffffffff;
+	cmd.cdw11		= offset >> 32;
+	cmd.cdw13		= 0;
+	cmd.cdw12		= (log_len / 4) - 1,
+	cmd.addr		= (__u64)(uintptr_t)buff;
+	cmd.data_len	= log_len;
+
+	ret = ioctl(fd, NVME_IOCTL_IO_CMD, &cmd);
+	if (ret) {
+		ret = -errno;
+		dprint(FD_ZBD, "zbd_zone_mgmt_report: Failed, ret = %d\n", ret);
+		goto out;
+	}
+
+	hdr = (struct nvme_zone_report_header *)buff;
+	buff += sizeof(*hdr);
+	nr_zones = hdr->nr_zones;
+	z = &zones[0];
+	dprint(FD_ZBD, "zbd_zone_mgmt_report: num zones = %d, id = %d\n", nr_zones, td->thread_number);
+	for (i = 0; i < nr_zones; i++, z++) {
+		zone_log = (struct nvme_zone_log *)buff;
+
+		z->start = zone_log->slba << 12;
+		z->wp = zone_log->wp << 12;
+		z->capacity = zone_log->capacity << 12;
+		z->attr = zone_log->zone_attrs;
+
+		switch (zone_log->zone_type) {
+		case BLK_ZONE_TYPE_CONVENTIONAL:
+			z->type = ZBD_ZONE_TYPE_CNV;
+			break;
+		case BLK_ZONE_TYPE_SEQWRITE_REQ:
+			z->type = ZBD_ZONE_TYPE_SWR;
+			break;
+		case BLK_ZONE_TYPE_SEQWRITE_PREF:
+			z->type = ZBD_ZONE_TYPE_SWP;
+			break;
+		default:
+			td_verror(td, errno, "invalid zone type");
+			log_err("zbd_zone_mgmt_report %s: invalid type %d for zone at sector %llu.\n",
+				f->file_name, zone_log->zone_type, (unsigned long long)(offset >> 9));
+			ret = -EIO;
+			goto out;
+		}
+
+		switch (zone_log->zone_state) {
+		case NVME_ZONE_EMPTY:
+			z->cond = ZBD_ZONE_COND_EMPTY;
+			break;
+		case NVME_ZONE_IMPLICITLY_OPENED:
+			z->cond = ZBD_ZONE_COND_IMP_OPEN;
+			break;
+		case NVME_ZONE_EXPLICITLY_OPENED:
+			z->cond = ZBD_ZONE_COND_EXP_OPEN;
+			break;
+		case NVME_ZONE_CLOSED:
+			z->cond = ZBD_ZONE_COND_CLOSED;
+			break;
+		case NVME_ZONE_FULL:
+			z->cond = ZBD_ZONE_COND_FULL;
+			break;
+		case NVME_ZONE_READONLY:
+		case NVME_ZONE_OFFLINE:
+		default:
+			/* Treat all these conditions as offline (don't use!) */
+			z->cond = ZBD_ZONE_COND_OFFLINE;
+			break;
+		}
+		buff += zone_info_sz;
+	}
+
+	ret = nr_zones;
+out:
+	free((void*)hdr);
+	close(fd);
+	return ret;
+}
+
 int blkzoned_reset_wp(struct thread_data *td, struct fio_file *f,
 		      uint64_t offset, uint64_t length)
 {

@@ -76,7 +76,11 @@ int zbd_report_zones(struct thread_data *td, struct fio_file *f,
 	if (td->io_ops && td->io_ops->report_zones)
 		ret = td->io_ops->report_zones(td, f, offset, zones, nr_zones);
 	else
-		ret = blkzoned_report_zones(td, f, offset, zones, nr_zones);
+		/* If device is nvme then use zone management receive command to get zone info */
+		if (strncmp("/dev/nvme", f->file_name, 9))
+			ret = blkzoned_report_zones(td, f, offset, zones, nr_zones);
+		else
+			ret = zbd_zone_mgmt_report(td, f, offset, zones, nr_zones);
 	if (ret < 0) {
 		td_verror(td, errno, "report zones failed");
 		log_err("%s: report zones from sector %llu failed (%d).\n",
@@ -308,6 +312,14 @@ static bool zbd_verify_sizes(struct thread_data *td)
 				 (unsigned long long) new_offset);
 			f->io_size -= (new_offset - f->file_offset);
 			f->file_offset = new_offset;
+		}
+
+		if (!td_random(td) || td->o.perc_rand[DDIR_WRITE] == 0) {
+			if (td->o.max_open_zones > 1) {
+				log_info("%s: changed max_open_zones from %d to 1 for sequential workload, id = %d\n",
+						f->file_name, td->o.max_open_zones, td->thread_number);
+				td->o.max_open_zones = 1;
+			}
 		}
 		if (td->o.num_zones > 0)
 			zone_idx = zbd_zone_idx(f, f->file_offset + (td->o.num_zones * td->o.zone_size));
@@ -581,13 +593,14 @@ static int parse_zone_info(struct thread_data *td, struct fio_file *f)
 			}
 		}
 	}
+	if ((td->o.ns_id == 0) && ns_id > 0)
+		td->o.ns_id = ns_id;
 
 	if (td->o.reset_all_zones_first) {
 		if (!zbd_zone_reset(td, f, 0x00, true, td->o.ns_id))
 			dprint(FD_ZBD, "parse_zone_info: reset zones failed \n");
 		td->o.reset_all_zones_first = false;
 	}
-
 	nrz = zbd_report_zones(td, f, 0, zones, ZBD_REPORT_MAX_ZONES);
 	if (nrz < 0) {
 		ret = nrz;
@@ -595,8 +608,10 @@ static int parse_zone_info(struct thread_data *td, struct fio_file *f)
 			 f->file_name, -ret);
 		goto out;
 	}
-
-	zone_size = zones[0].len;
+	if (strncmp("/dev/nvme", f->file_name, 9))
+		zone_size = zones[0].len;
+	else
+		zone_size = zones[1].start - zones[0].start;
 	nr_zones = (f->real_file_size + zone_size - 1) / zone_size;
 	if (nr_zones != nrz) {
 		dprint(FD_ZBD, "parse_zone_info: num zones = %d, zone log header number of zones = %d\n",
@@ -613,8 +628,8 @@ static int parse_zone_info(struct thread_data *td, struct fio_file *f)
 		goto out;
 	}
 
-	dprint(FD_ZBD, "Device %s has %d zones of size %llu KB\n", f->file_name,
-	       nr_zones, (unsigned long long) zone_size / 1024);
+	dprint(FD_ZBD, "Device %s has %d zones of size 0x%llX\n", f->file_name,
+	       nr_zones, (unsigned long long) zone_size);
 
 	zbd_info = scalloc(1, sizeof(*zbd_info) +
 			   (nr_zones + 1) * sizeof(zbd_info->zone_info[0]));
@@ -663,8 +678,8 @@ static int parse_zone_info(struct thread_data *td, struct fio_file *f)
 					dprint(FD_ZBD, "parse_zone_info: implicitly open zone = %d, 0x%lX, wp = 0x%lX, open zones = %d\n",
 							j, z->start, z->wp, td->o.num_open_zones);
 				if (z->cond == ZBD_ZONE_COND_CLOSED)
-					dprint(FD_ZBD, "parse_zone_info: closed zone = %d, 0x%lX, wp = 0x%lX, open zones = %d\n",
-							j, z->start, z->wp, td->o.num_open_zones);
+					dprint(FD_ZBD, "parse_zone_info: closed zone = %d, 0x%lX, wp = 0x%lX, open zones = %d, attr = %d\n",
+							j, z->start, z->wp, td->o.num_open_zones, z->attr);
 				if (td->o.reset_active_zones_first) {
 					if (!zbd_zone_reset(td, f, (p->start >> NVME_ZONE_LBA_SHIFT), false, td->o.ns_id))	{
 						td_verror(td, errno, "resetting zone failed");
@@ -686,7 +701,12 @@ static int parse_zone_info(struct thread_data *td, struct fio_file *f)
 					p->wp = z->wp;
 					p->dev_wp = z->wp;
 					p->cond = z->cond;
-					p->finish_zone = 1;
+					/* If not zrwa mode and zone has zrwa allocation then issue finish zone when full */
+					if (!td->o.zrwa_alloc && (z->attr & NVME_ZONE_ATTR_RWA_ALLOCATED)) {
+						p->finish_zone = 1;
+						dprint(FD_ZBD, "parse_zone_info: finish zone = %d, 0x%lX, wp = 0x%lX\n",
+								j, z->start, z->wp);
+					}
 					if (!td->o.reset_all_zones_first) {
 						td->o.open_zones[td->o.num_open_zones++] = j;
 						td->num_open_zones++;
@@ -713,7 +733,7 @@ static int parse_zone_info(struct thread_data *td, struct fio_file *f)
 			}
 		}
 		z--;
-		offset = z->start + z->len;
+		offset = z->start + zone_size;
 		if (j >= nr_zones)
 			break;
 		nrz = zbd_report_zones(td, f, offset,
@@ -1906,11 +1926,13 @@ zbd_find_zone(struct thread_data *td, struct io_u *io_u,
 	/*
 	 * Find first non-empty zone in case of sequential I/O and to
 	 * the nearest non-empty zone in case of random I/O.
+	 * Pick first available in case of td->o.read_beyond_wp
 	 */
 	for (z1 = zb, z2 = zb - 1; z1 < zl || z2 >= zf; z1++, z2--) {
 		if (z1 < zl && z1->cond != ZBD_ZONE_COND_OFFLINE) {
 			zone_lock(td, f, z1);
-			if (z1->start + min_bs <= z1->wp)
+			if ((z1->start + min_bs <= z1->wp) ||
+					(td->o.read_beyond_wp && ((io_u->offset + io_u->buflen) < (z1->start + z1->capacity))))
 				return z1;
 			pthread_mutex_unlock(&z1->mutex);
 		} else if (!td_random(td)) {
@@ -1919,7 +1941,7 @@ zbd_find_zone(struct thread_data *td, struct io_u *io_u,
 		if (td_random(td) && z2 >= zf &&
 		    z2->cond != ZBD_ZONE_COND_OFFLINE) {
 			zone_lock(td, f, z2);
-			if (z2->start + min_bs <= z2->wp)
+			if ((z2->start + min_bs <= z2->wp) || td->o.read_beyond_wp)
 				return z2;
 			pthread_mutex_unlock(&z2->mutex);
 		}
@@ -2299,6 +2321,9 @@ enum io_u_action zbd_adjust_block(struct thread_data *td, struct io_u *io_u)
 	 */
 	if (zb->cond != ZBD_ZONE_COND_OFFLINE &&
 	    io_u->ddir == DDIR_READ && td->o.read_beyond_wp) {
+		dprint(FD_ZBD, "Adjust_block: zone %d - (0x%llX, 0x%llX), start + cap = 0x%lX, \n",
+				zone_idx_b, io_u->offset, io_u->buflen, (zb->start + zb->capacity));
+
 		if (io_u->offset + io_u->buflen <= zb->start + zb->capacity) {
 			return io_u_accept;
 		}
@@ -2336,6 +2361,8 @@ enum io_u_action zbd_adjust_block(struct thread_data *td, struct io_u *io_u)
 			pthread_mutex_unlock(&zb->mutex);
 			zl = &f->zbd_info->zone_info[f->max_zone + 1];
 			zb = zbd_find_zone(td, io_u, zb, zl);
+			dprint(FD_ZBD, "%s: zbd_find_zone(0x%llX, 0x%llX) returnd zone 0x%lX\n",
+			       f->file_name, io_u->offset, io_u->buflen, zb->start);
 			if (!zb) {
 				dprint(FD_ZBD, "%s: zbd_find_zone(0x%llX, 0x%llX) failed\n",
 				       f->file_name, io_u->offset, io_u->buflen);
@@ -2345,11 +2372,15 @@ enum io_u_action zbd_adjust_block(struct thread_data *td, struct io_u *io_u)
 			 * zbd_find_zone() returned a zone with a range of at
 			 * least min_bs.
 			 */
-			range = zb->wp - zb->start;
-			assert(range >= min_bs);
-
 			if (!td_random(td))
 				io_u->offset = zb->start;
+			if (!td->o.read_beyond_wp) {
+				range = zb->wp - zb->start;
+				assert(range >= min_bs);
+			} else {
+				io_u->offset = ((zb->wp + io_u->buflen) < zb->capacity) ? zb->wp : zb->start;
+				return io_u_accept;
+			}
 		}
 		/*
 		 * Make sure the I/O is within the zone valid data range while
