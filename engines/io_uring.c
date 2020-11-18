@@ -66,6 +66,7 @@ struct ioring_data {
 	unsigned iodepth;
 	bool ioprio_class_set;
 	bool ioprio_set;
+	int prepped;
 
 	struct ioring_mmap mmap[3];
 };
@@ -82,6 +83,7 @@ struct ioring_options {
 	unsigned int nonvectored;
 	unsigned int uncached;
 	unsigned int nowait;
+	unsigned int force_async;
 };
 
 static const int ddir_to_op[2][2] = {
@@ -174,6 +176,7 @@ static struct fio_option options[] = {
 		.lname	= "Non-vectored",
 		.type	= FIO_OPT_INT,
 		.off1	= offsetof(struct ioring_options, nonvectored),
+		.def	= "-1",
 		.help	= "Use non-vectored read/write commands",
 		.category = FIO_OPT_C_ENGINE,
 		.group	= FIO_OPT_G_IOURING,
@@ -197,6 +200,15 @@ static struct fio_option options[] = {
 		.group	= FIO_OPT_G_IOURING,
 	},
 	{
+		.name	= "force_async",
+		.lname	= "Force async",
+		.type	= FIO_OPT_INT,
+		.off1	= offsetof(struct ioring_options, force_async),
+		.help	= "Set IOSQE_ASYNC every N requests",
+		.category = FIO_OPT_C_ENGINE,
+		.group	= FIO_OPT_G_IOURING,
+	},
+	{
 		.name	= NULL,
 	},
 };
@@ -216,9 +228,6 @@ static int fio_ioring_prep(struct thread_data *td, struct io_u *io_u)
 	struct io_uring_sqe *sqe;
 
 	sqe = &ld->sqes[io_u->index];
-
-	/* zero out fields not used in this submission */
-	memset(sqe, 0, sizeof(*sqe));
 
 	if (o->registerfiles) {
 		sqe->fd = f->engine_pos;
@@ -261,17 +270,27 @@ static int fio_ioring_prep(struct thread_data *td, struct io_u *io_u)
 		if (ld->ioprio_set)
 			sqe->ioprio |= td->o.ioprio;
 		sqe->off = io_u->offset;
+		sqe->rw_flags = 0;
 	} else if (ddir_sync(io_u->ddir)) {
+		sqe->ioprio = 0;
 		if (io_u->ddir == DDIR_SYNC_FILE_RANGE) {
 			sqe->off = f->first_write;
 			sqe->len = f->last_write - f->first_write;
 			sqe->sync_range_flags = td->o.sync_file_range;
 			sqe->opcode = IORING_OP_SYNC_FILE_RANGE;
 		} else {
+			sqe->off = 0;
+			sqe->addr = 0;
+			sqe->len = 0;
 			if (io_u->ddir == DDIR_DATASYNC)
 				sqe->fsync_flags |= IORING_FSYNC_DATASYNC;
 			sqe->opcode = IORING_OP_FSYNC;
 		}
+	}
+
+	if (o->force_async && ++ld->prepped == o->force_async) {
+		ld->prepped = 0;
+		sqe->flags |= IOSQE_ASYNC;
 	}
 
 	sqe->user_data = (unsigned long) io_u;
@@ -443,9 +462,10 @@ static int fio_ioring_commit(struct thread_data *td)
 	 */
 	if (o->sqpoll_thread) {
 		struct io_sq_ring *ring = &ld->sq_ring;
+		unsigned flags;
 
-		read_barrier();
-		if (*ring->flags & IORING_SQ_NEED_WAKEUP)
+		flags = atomic_load_acquire(ring->flags);
+		if (flags & IORING_SQ_NEED_WAKEUP)
 			io_uring_enter(ld, ld->queued, 0,
 					IORING_ENTER_SQ_WAKEUP);
 		ld->queued = 0;
@@ -547,6 +567,40 @@ static int fio_ioring_mmap(struct ioring_data *ld, struct io_uring_params *p)
 	return 0;
 }
 
+static void fio_ioring_probe(struct thread_data *td)
+{
+	struct ioring_data *ld = td->io_ops_data;
+	struct ioring_options *o = td->eo;
+	struct io_uring_probe *p;
+	int ret;
+
+	/* already set by user, don't touch */
+	if (o->nonvectored != -1)
+		return;
+
+	/* default to off, as that's always safe */
+	o->nonvectored = 0;
+
+	p = malloc(sizeof(*p) + 256 * sizeof(struct io_uring_probe_op));
+	if (!p)
+		return;
+
+	memset(p, 0, sizeof(*p) + 256 * sizeof(struct io_uring_probe_op));
+	ret = syscall(__NR_io_uring_register, ld->ring_fd,
+			IORING_REGISTER_PROBE, p, 256);
+	if (ret < 0)
+		goto out;
+
+	if (IORING_OP_WRITE > p->ops_len)
+		goto out;
+
+	if ((p->ops[IORING_OP_READ].flags & IO_URING_OP_SUPPORTED) &&
+	    (p->ops[IORING_OP_WRITE].flags & IO_URING_OP_SUPPORTED))
+		o->nonvectored = 1;
+out:
+	free(p);
+}
+
 static int fio_ioring_queue_init(struct thread_data *td)
 {
 	struct ioring_data *ld = td->io_ops_data;
@@ -573,15 +627,9 @@ static int fio_ioring_queue_init(struct thread_data *td)
 
 	ld->ring_fd = ret;
 
+	fio_ioring_probe(td);
+
 	if (o->fixedbufs) {
-		struct rlimit rlim = {
-			.rlim_cur = RLIM_INFINITY,
-			.rlim_max = RLIM_INFINITY,
-		};
-
-		if (setrlimit(RLIMIT_MEMLOCK, &rlim) < 0)
-			return -1;
-
 		ret = syscall(__NR_io_uring_register, ld->ring_fd,
 				IORING_REGISTER_BUFFERS, ld->iovecs, depth);
 		if (ret < 0)
@@ -652,6 +700,13 @@ static int fio_ioring_post_init(struct thread_data *td)
 		return 1;
 	}
 
+	for (i = 0; i < td->o.iodepth; i++) {
+		struct io_uring_sqe *sqe;
+
+		sqe = &ld->sqes[i];
+		memset(sqe, 0, sizeof(*sqe));
+	}
+
 	if (o->registerfiles) {
 		err = fio_ioring_register_files(td);
 		if (err) {
@@ -668,6 +723,12 @@ static int fio_ioring_init(struct thread_data *td)
 	struct ioring_options *o = td->eo;
 	struct ioring_data *ld;
 	struct thread_options *to = &td->o;
+
+	if (to->io_submit_mode == IO_MODE_OFFLOAD) {
+		log_err("fio: io_submit_mode=offload is not compatible (or "
+			"useful) with io_uring\n");
+		return 1;
+	}
 
 	/* sqthread submission requires registered files */
 	if (o->sqpoll_thread)
@@ -745,7 +806,7 @@ static int fio_ioring_close_file(struct thread_data *td, struct fio_file *f)
 static struct ioengine_ops ioengine = {
 	.name			= "io_uring",
 	.version		= FIO_IOOPS_VERSION,
-	.flags			= FIO_ASYNCIO_SYNC_TRIM,
+	.flags			= FIO_ASYNCIO_SYNC_TRIM | FIO_NO_OFFLOAD,
 	.init			= fio_ioring_init,
 	.post_init		= fio_ioring_post_init,
 	.io_u_init		= fio_ioring_io_u_init,

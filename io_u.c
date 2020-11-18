@@ -795,7 +795,7 @@ void put_io_u(struct thread_data *td, struct io_u *io_u)
 {
 	const bool needs_lock = td_async_processing(td);
 
-	zbd_put_io_u(io_u);
+	zbd_put_io_u(td, io_u);
 
 	if (td->parent)
 		td = td->parent;
@@ -993,6 +993,7 @@ static void __io_u_mark_map(uint64_t *map, unsigned int nr)
 		break;
 	case 1 ... 4:
 		idx = 1;
+		fallthrough;
 	case 0:
 		break;
 	}
@@ -1034,6 +1035,7 @@ void io_u_mark_depth(struct thread_data *td, unsigned int nr)
 		break;
 	case 2 ... 3:
 		idx = 1;
+		fallthrough;
 	case 1:
 		break;
 	}
@@ -1074,6 +1076,7 @@ static void io_u_mark_lat_nsec(struct thread_data *td, unsigned long long nsec)
 		break;
 	case 2 ... 3:
 		idx = 1;
+		fallthrough;
 	case 0 ... 1:
 		break;
 	}
@@ -1115,6 +1118,7 @@ static void io_u_mark_lat_usec(struct thread_data *td, unsigned long long usec)
 		break;
 	case 2 ... 3:
 		idx = 1;
+		fallthrough;
 	case 0 ... 1:
 		break;
 	}
@@ -1162,6 +1166,7 @@ static void io_u_mark_lat_msec(struct thread_data *td, unsigned long long msec)
 		break;
 	case 2 ... 3:
 		idx = 1;
+		fallthrough;
 	case 0 ... 1:
 		break;
 	}
@@ -1364,7 +1369,7 @@ static long set_io_u_file(struct thread_data *td, struct io_u *io_u)
 		if (!fill_io_u(td, io_u))
 			break;
 
-		zbd_put_io_u(io_u);
+		zbd_put_io_u(td, io_u);
 
 		put_file_log(td, f);
 		td_io_close_file(td, f);

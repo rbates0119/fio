@@ -83,6 +83,7 @@ struct thread_options {
 	unsigned long long size;
 	unsigned long long io_size;
 	unsigned int size_percent;
+	unsigned int io_size_percent;
 	unsigned int fill_device;
 	unsigned int file_append;
 	unsigned long long file_size_low;
@@ -311,11 +312,6 @@ struct thread_options {
 	unsigned int uid;
 	unsigned int gid;
 
-	int flow_id;
-	int flow;
-	int flow_watermark;
-	unsigned int flow_sleep;
-
 	unsigned int offset_increment_percent;
 	unsigned long long offset_increment;
 	unsigned long long number_ios;
@@ -326,6 +322,13 @@ struct thread_options {
 	unsigned long long latency_window;
 	fio_fp64_t latency_percentile;
 	uint32_t latency_run;
+
+	/*
+	 * flow support
+	 */
+	int flow_id;
+	unsigned int flow;
+	unsigned int flow_sleep;
 
 	unsigned int sig_figs;
 
@@ -379,6 +382,7 @@ struct thread_options_pack {
 	uint64_t size;
 	uint64_t io_size;
 	uint32_t size_percent;
+	uint32_t io_size_percent;
 	uint32_t fill_device;
 	uint32_t file_append;
 	uint32_t unique_filename;
@@ -457,6 +461,8 @@ struct thread_options_pack {
 
 	struct zone_split zone_split[DDIR_RWDIR_CNT][ZONESPLIT_MAX];
 	uint32_t zone_split_nr[DDIR_RWDIR_CNT];
+
+	uint8_t pad1[4];
 
 	fio_fp64_t zipf_theta;
 	fio_fp64_t pareto_h;
@@ -602,11 +608,6 @@ struct thread_options_pack {
 	uint32_t uid;
 	uint32_t gid;
 
-	int32_t flow_id;
-	int32_t flow;
-	int32_t flow_watermark;
-	uint32_t flow_sleep;
-
 	uint32_t offset_increment_percent;
 	uint64_t offset_increment;
 	uint64_t number_ios;
@@ -616,6 +617,13 @@ struct thread_options_pack {
 	uint64_t max_latency;
 	fio_fp64_t latency_percentile;
 	uint32_t latency_run;
+
+	/*
+	 * flow support
+	 */
+	int32_t flow_id;
+	uint32_t flow;
+	uint32_t flow_sleep;
 
 	uint32_t sig_figs;
 
