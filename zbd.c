@@ -2367,9 +2367,23 @@ enum io_u_action zbd_adjust_block(struct thread_data *td, struct io_u *io_u)
 			zl = &f->zbd_info->zone_info[f->max_zone + 1];
 			zb = zbd_find_zone(td, io_u, zb, zl);
 			if (!zb) {
-				dprint(FD_ZBD, "%s: zbd_find_zone(0x%llX, 0x%llX) failed\n",
-				       f->file_name, io_u->offset, io_u->buflen);
-				goto eof;
+				zb = orig_zb;
+				if (td->o.read_beyond_wp) {
+					if (td_random(td) || (td->o.perc_rand[DDIR_WRITE] > 0)) {
+						srand(g_rand_seed++);
+						io_u->offset = zb->start + (rand() % (uint32_t)(zb->capacity / io_u->buflen)) * io_u->buflen  ;
+						if (io_u->offset + io_u->buflen <= zb->start + zb->capacity) {
+							return io_u_accept;
+						}
+					} else {
+						io_u->offset = zb->start;
+						return io_u_accept;
+					}
+				} else {
+					log_err("%s: zbd_find_zone(0x%llX, 0x%llX) failed, id = %d\n",
+						   f->file_name, io_u->offset, io_u->buflen, td->thread_number);
+					goto eof;
+				}
 			}
 			/*
 			 * zbd_find_zone() returned a zone with a range of at
@@ -2440,7 +2454,7 @@ enum io_u_action zbd_adjust_block(struct thread_data *td, struct io_u *io_u)
 						if (td->o.time_based) {
 							zone_idx_b++;
 							if (zone_idx_b > f->max_zone)
-								zone_idx_b = 0;
+								zone_idx_b = f->min_zone;
 							zb = &f->zbd_info->zone_info[zone_idx_b];
 							zb->reset_zone = true;
 							goto reset;
@@ -2449,11 +2463,10 @@ enum io_u_action zbd_adjust_block(struct thread_data *td, struct io_u *io_u)
 								goto eof;
 							} else {
 								zone_idx_b++;
-								if (zone_idx_b >= (f->io_size / f->zbd_info->zone_size))
-									zone_idx_b = 0;
+								if (zone_idx_b > f->max_zone)
+									zone_idx_b = f->min_zone;
 								zb = &f->zbd_info->zone_info[zone_idx_b];
 								zb->reset_zone = true;
-								pthread_mutex_lock(&zb->mutex);
 							}
 						}
 					}
@@ -2485,6 +2498,7 @@ enum io_u_action zbd_adjust_block(struct thread_data *td, struct io_u *io_u)
 				}
 			}
 		}
+
 		if (!zbd_open_zone(td, io_u, zone_idx_b, false)) {
 			if ((zb->cond == ZBD_ZONE_COND_FULL) &&
 					td->o.time_based && (is_zone_open(td, zone_idx_b)) &&
@@ -2577,7 +2591,6 @@ reset:
 			if (td->o.zone_append)
 				pthread_mutex_unlock(&zb->mutex);
 			io_u_quiesce(td);
-			pthread_mutex_lock(&zb->mutex);
 
 			if (td->o.zone_append) {
 				/*
@@ -2597,10 +2610,10 @@ reset:
 					goto proceed;
 				}
 			}
-
 			if (zbd_reset_zone(td, f, zb, zb->open) < 0)
 				goto eof;
 			zb->reset_zone = 0;
+			pthread_mutex_lock(&zb->mutex);
 
 			/* Notify other threads waiting for zone mutex */
 			if (td->o.zone_append)
