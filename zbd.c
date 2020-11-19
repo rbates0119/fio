@@ -77,10 +77,13 @@ int zbd_report_zones(struct thread_data *td, struct fio_file *f,
 		ret = td->io_ops->report_zones(td, f, offset, zones, nr_zones);
 	else
 		/* If device is nvme then use zone management receive command to get zone info */
-		if (strncmp("/dev/nvme", f->file_name, 9))
+		if (strncmp("/dev/nvme", f->file_name, 9)) {
 			ret = blkzoned_report_zones(td, f, offset, zones, nr_zones);
-		else
+		} else {
 			ret = zbd_zone_mgmt_report(td, f, offset, zones, nr_zones);
+			if (ret < 0)
+				ret = blkzoned_report_zones(td, f, offset, zones, nr_zones);
+		}
 	if (ret < 0) {
 		td_verror(td, errno, "report zones failed");
 		log_err("%s: report zones from sector %llu failed (%d).\n",
@@ -601,6 +604,7 @@ static int parse_zone_info(struct thread_data *td, struct fio_file *f)
 			dprint(FD_ZBD, "parse_zone_info: reset zones failed \n");
 		td->o.reset_all_zones_first = false;
 	}
+	zones[0].len = 0;
 	nrz = zbd_report_zones(td, f, 0, zones, ZBD_REPORT_MAX_ZONES);
 	if (nrz < 0) {
 		ret = nrz;
@@ -609,7 +613,10 @@ static int parse_zone_info(struct thread_data *td, struct fio_file *f)
 		goto out;
 	}
 	if (strncmp("/dev/nvme", f->file_name, 9))
-		zone_size = zones[0].len;
+		if (zones[0].len == 0)
+			zone_size = zones[1].start - zones[0].start;
+		else
+			zone_size = zones[0].len;
 	else
 		zone_size = zones[1].start - zones[0].start;
 	nr_zones = (f->real_file_size + zone_size - 1) / zone_size;
