@@ -1943,6 +1943,7 @@ zbd_find_zone(struct thread_data *td, struct io_u *io_u,
 			zone_lock(td, f, z2);
 			if ((z2->start + min_bs <= z2->wp) ||
 					(td->o.read_beyond_wp && ((io_u->offset + io_u->buflen) < (z2->start + z2->capacity))))
+				return z2;
 			pthread_mutex_unlock(&z2->mutex);
 		}
 	}
