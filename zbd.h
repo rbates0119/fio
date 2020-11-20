@@ -102,8 +102,6 @@ struct zoned_block_device_info {
 	struct fio_zone_info	zone_info[0];
 };
 
-#define NVME_IOCTL_ADMIN_CMD	_IOWR('N', 0x41, struct nvme_admin_cmd)
-
 int zbd_setup_files(struct thread_data *td);
 void zbd_free_zone_info(struct fio_file *f);
 void zbd_file_reset(struct thread_data *td, struct fio_file *f);

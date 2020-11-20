@@ -43,6 +43,24 @@ enum zbd_zone_cond {
         ZBD_ZONE_COND_OFFLINE   = 0xF,
 };
 
+enum nvme_zone_attribute_flags {
+	NVME_ZONE_ATTR_FINISHED_CONTROLLER	= 1 << 0,
+	NVME_ZONE_ATTR_FINISH_RECOMMENDED	= 1 << 1,
+	NVME_ZONE_ATTR_RESET_RECOMMENDED	= 1 << 2,
+	NVME_ZONE_ATTR_RWA_ALLOCATED		= 1 << 3,
+	NVME_ZONE_ATTR_DESCRIPTOR_VALID	        = 1 << 7,
+};
+
+enum nvme_zone_state {
+        NVME_ZONE_EMPTY                 = 0x1 << 4,
+        NVME_ZONE_IMPLICITLY_OPENED     = 0x2 << 4,
+        NVME_ZONE_EXPLICITLY_OPENED     = 0x3 << 4,
+        NVME_ZONE_CLOSED                = 0x4 << 4,
+        NVME_ZONE_READONLY              = 0xd << 4,
+        NVME_ZONE_FULL                  = 0xe << 4,
+        NVME_ZONE_OFFLINE               = 0xf << 4,
+};
+
 /*
  * Zone descriptor.
  */
@@ -53,6 +71,7 @@ struct zbd_zone {
 	uint64_t        capacity;
 	enum zbd_zone_type	type;
 	enum zbd_zone_cond	cond;
+	enum nvme_zone_attribute_flags attr;
 };
 
 struct nvme_lbaf {
