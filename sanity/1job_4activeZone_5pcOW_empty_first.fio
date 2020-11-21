@@ -1,0 +1,32 @@
+# INI is used to do full drive write with 12 active zones and 1pc overwrite.
+[global]
+filename=/dev/nvme1n1
+ioscheduler=none
+rw=randwrite
+bs=256K
+direct=1
+numjobs=1
+#io_size=5385M
+zrwa_alloc=1
+zrwa_overwrite_percent=5
+fill_empty_zones_first=1
+zonemode=zbd
+ioengine=libaio
+iodepth=1
+iodepth_batch_complete_min=1
+issue_zone_finish=1
+[block 1]
+size=300G
+max_open_zones=1
+[block 2]
+size=300G
+offset=300G
+max_open_zones=1
+[block 3]
+size=300G
+offset=600G
+max_open_zones=1
+[block 4]
+size=300G
+offset=900G
+max_open_zones=1

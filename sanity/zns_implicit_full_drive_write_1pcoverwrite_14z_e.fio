@@ -1,0 +1,28 @@
+# INI is used to do full drive write with 12 active zones and 1pc overwrite.
+[seq-write_bs128K_qd256]
+name=zc-seq-write
+filename=/dev/nvme1n1
+rw=randwrite
+bs=64K
+direct=1
+numjobs=1
+#600 Zone capacity in Bytes
+io_size=646200M
+zrwa_alloc=1
+#600 Zone size in Bytes 
+size=1200G
+zrwa_overwrite_percent=1
+zonemode=zbd
+fill_empty_zones_first=1
+max_open_zones=14
+ioengine=libaio
+# This parameter is at controller level and so the IO's do not saturate the drive.
+# This parameter should be at a zone level so that each zone can be run at max QD.
+#Low QD set to not violate ZRWA
+iodepth=4
+#cpumask=cpus_allowed
+issue_zone_finish=1
+#exp_commit=1
+commit_gran=16384
+reset_active_zones_first=1
+ns_id=1
