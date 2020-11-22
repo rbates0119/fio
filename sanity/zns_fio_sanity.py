@@ -18,7 +18,7 @@ class FIO_TESTS:
 
     #Formats the given namespace
     def format_namespace(self, ns):
-        cmd = ("nvme format {} -f".format(ns))
+        cmd = ("nvme format {} -b 4096 -f".format(ns))
         print("Formatting namespace")
         os.system(cmd)
     
@@ -74,17 +74,17 @@ class FIO_TESTS:
             sys.exit(1)
 
     def get_empty_zones(self):
-        cmd = ("nvme zone-log {} | grep -c EMPTY".format(self.zns))
+        cmd = ("nvme zns report-zones {} -s 0 | grep -c EMPTY".format(self.zns))
         proc = subprocess.Popen(cmd, shell=True, stderr=subprocess.STDOUT, stdout=subprocess.PIPE)
         return int(proc.stdout.read())
 
     def get_open_zones(self):
-        cmd = ("nvme zone-log {} | grep -c OPEN".format(self.zns))
+        cmd = ("nvme zns report-zones {}  -s 0 | grep -c OPEN".format(self.zns))
         proc = subprocess.Popen(cmd, shell=True, stderr=subprocess.STDOUT, stdout=subprocess.PIPE)
         return int(proc.stdout.read())
 
     def get_full_zones(self):
-        cmd = ("nvme zone-log {} | grep -c FULL".format(self.zns))
+        cmd = ("nvme zns report-zones {} -s 0 | grep -c FULL".format(self.zns))
         proc = subprocess.Popen(cmd, shell=True, stderr=subprocess.STDOUT, stdout=subprocess.PIPE)
         return int(proc.stdout.read())
 
@@ -311,7 +311,7 @@ class ZRWA_Tests(FIO_TESTS):
 
 
 def create_namespace(ctrl, size, type):
-    cmd = "nvme create-ns -s %d -c %d -f 0 -csi %d %s" % (size, size, type, ctrl)
+    cmd = "nvme create-ns -s %d -c %d -b 4096 -csi %d %s" % (size, size, type, ctrl)
     print(cmd)
     proc = subprocess.Popen(cmd, shell=True, stderr=subprocess.STDOUT, stdout=subprocess.PIPE)
     output =  proc.stdout.read().decode('utf-8')
