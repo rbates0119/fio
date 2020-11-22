@@ -71,7 +71,8 @@ int zbd_report_zones(struct thread_data *td, struct fio_file *f,
 		     uint64_t offset, struct zbd_zone *zones,
 		     unsigned int nr_zones)
 {
-	int ret;
+	int fd, ret;
+	char file_name[20];
 
 	if (td->io_ops && td->io_ops->report_zones)
 		ret = td->io_ops->report_zones(td, f, offset, zones, nr_zones);
@@ -80,7 +81,13 @@ int zbd_report_zones(struct thread_data *td, struct fio_file *f,
 		if (strncmp("/dev/nvme", f->file_name, 9)) {
 			ret = blkzoned_report_zones(td, f, offset, zones, nr_zones);
 		} else {
-			ret = zbd_zone_mgmt_report(td, f, offset, zones, nr_zones);
+			sprintf(file_name, "namespace_%d.bin",nr_zones);
+			fd = open(file_name, O_RDONLY, S_IRUSR);
+			if (fd < 0) {
+				zbd_create_zone_data(td, nr_zones);
+			}
+
+			ret = zbd_zone_mgmt_report(td, f, offset, zones, nr_zones, true);
 			if (ret < 0)
 				ret = blkzoned_report_zones(td, f, offset, zones, nr_zones);
 		}
@@ -306,8 +313,8 @@ static bool zbd_verify_sizes(struct thread_data *td)
 			(td->o.td_ddir != TD_DDIR_READ)) {
 			new_offset = zbd_zone_end(z);
 			if (new_offset >= f->file_offset + f->io_size) {
-				log_info("%s: io_size must be at least one zone\n",
-					 f->file_name);
+				log_info("%s: io_size 0x%lX must be at least one zone, 0x%llX\n",
+					 f->file_name, f->io_size, td->o.zone_size);
 				return false;
 			}
 			log_info("%s: rounded up offset from %llu to %llu\n",
@@ -333,8 +340,8 @@ static bool zbd_verify_sizes(struct thread_data *td)
 		if ((td->o.td_ddir != TD_DDIR_READ) &&
 			(f->file_offset + f->io_size != new_end)) {
 			if (new_end <= f->file_offset) {
-				log_info("%s: io_size must be at least one zone\n",
-					 f->file_name);
+				log_info("%s: io_size 0x%lX must be at least one zone, 0x%llX\n",
+					 f->file_name, f->io_size, td->o.zone_size);
 				return false;
 			}
 			if (td->o.num_zones == 0) {
@@ -605,7 +612,7 @@ static int parse_zone_info(struct thread_data *td, struct fio_file *f)
 		td->o.reset_all_zones_first = false;
 	}
 	zones[0].len = 0;
-	nrz = zbd_report_zones(td, f, 0, zones, ZBD_REPORT_MAX_ZONES);
+	nrz = zbd_report_zones(td, f, 0, zones, td->o.num_simulated_zones);
 	if (nrz < 0) {
 		ret = nrz;
 		log_info("fio: report zones (offset 0) failed for %s (%d).\n",
@@ -619,7 +626,10 @@ static int parse_zone_info(struct thread_data *td, struct fio_file *f)
 			zone_size = zones[0].len;
 	else
 		zone_size = zones[1].start - zones[0].start;
-	nr_zones = (f->real_file_size + zone_size - 1) / zone_size;
+	if (td->o.num_simulated_zones > 0)
+		nr_zones = td->o.num_simulated_zones;
+	else
+		nr_zones = (f->real_file_size + zone_size - 1) / zone_size;
 	if (nr_zones != nrz) {
 		dprint(FD_ZBD, "parse_zone_info: num zones = %d, zone log header number of zones = %d\n",
 				nr_zones, nrz);
@@ -1074,7 +1084,8 @@ static int zbd_reset_range(struct thread_data *td, struct fio_file *f,
 	switch (f->zbd_info->model) {
 	case ZBD_HOST_AWARE:
 	case ZBD_HOST_MANAGED:
-		ret = zbd_reset_wp(td, f, offset, length);
+		if (td->o.num_simulated_zones == 0)
+			ret = zbd_reset_wp(td, f, offset, length);
 		if (ret < 0)
 			return ret;
 		break;
@@ -1125,6 +1136,11 @@ static int zbd_reset_zone(struct thread_data *td, struct fio_file *f,
 			  struct fio_zone_info *z, bool open)
 {
 	bool result = false;
+	if (td->o.num_simulated_zones > 0) {
+		if (!zbd_update_zone_data(td, (z->start >> 12), NVME_ZONE_EMPTY, zbd_zone_nr(f->zbd_info, z)))
+			log_err("zbd_close_zone: zone %d update failed, start = 0x%lX, wp = 0x%lX\n",
+					zbd_zone_nr(f->zbd_info, z), z->start, z->wp);
+	}
 	result = zbd_reset_range(td, f, z->start, zbd_zone_end(z) - z->start, open);
 	dprint(FD_ZBD, "%s: resetting wp of zone %u, id = %d, result = %d\n", f->file_name,
 		zbd_zone_nr(f->zbd_info, z), td->thread_number, result);
@@ -1177,6 +1193,9 @@ close:
 
 		dprint(FD_ZBD, "%s(%s): closing zone %d, id = %d\n", __func__, f->file_name,
 		   zone_idx, td->thread_number);
+		if (!zbd_update_zone_data(td, (z->wp >> 12), NVME_ZONE_FULL, zone_idx))
+			log_err("zbd_close_zone: zone %d update failed, start = 0x%lX, wp = 0x%lX\n",
+					zone_idx, z->start, z->wp);
 
 		memmove(td->o.open_zones + open_zone_idx,
 			td->o.open_zones + open_zone_idx + 1,
@@ -1539,6 +1558,11 @@ static bool zbd_open_zone(struct thread_data *td, const struct io_u *io_u,
 	bool res = true;
 	int i, open_count = 0;
 
+	dprint(FD_ZBD, "%s: opening zone %d, id = %d, open_zones = %d, total_open = %d%s \n",
+			f->file_name, zone_idx, td->thread_number, td->o.num_open_zones, td->num_open_zones, td->o.zrwa_alloc ? " with ZRWA": "");
+	dprint(FD_ZBD, "zbd_open_zone: zone %d start = 0x%lX, wp = 0x%lX\n",
+			zone_idx, z->start, z->wp);
+
 	if (!force_open) {
 
 		if (z->cond == ZBD_ZONE_COND_OFFLINE)
@@ -1634,6 +1658,9 @@ static bool zbd_open_zone(struct thread_data *td, const struct io_u *io_u,
 			if(!zbd_issue_exp_open_zrwa(f, zone_idx, z->start >> NVME_ZONE_LBA_SHIFT, td->o.ns_id))
 				goto out;
 			z->cond = ZBD_ZONE_COND_EXP_OPEN;
+			if (!zbd_update_zone_data(td, (z->wp >> 12), ZBD_ZONE_COND_EXP_OPEN, zone_idx))
+				log_err("zbd_open_zone: zone %d update failed, start = 0x%lX, wp = 0x%lX\n",
+						zone_idx, z->start, z->wp);
 		}
 	} else {
 		z->cond = ZBD_ZONE_COND_IMP_OPEN;
@@ -1646,6 +1673,10 @@ static bool zbd_open_zone(struct thread_data *td, const struct io_u *io_u,
 	dprint(FD_ZBD, "zbd_open_zone: zone %d start = 0x%lX, wp = 0x%lX\n",
 			zone_idx, z->start, z->wp);
 	res = true;
+	if (!zbd_update_zone_data(td, (z->wp >> 12), ZBD_ZONE_COND_IMP_OPEN, zone_idx))
+		log_err("zbd_open_zone: zone %d update failed, start = 0x%lX, wp = 0x%lX\n",
+				zone_idx, z->start, z->wp);
+
 
 out:
 	pthread_mutex_unlock(&f->zbd_info->mutex);

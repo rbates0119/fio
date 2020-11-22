@@ -354,6 +354,7 @@ struct thread_options {
 	int num_open_zones;
 	int num_filled_zones;
 	int num_zones;
+	int num_simulated_zones;
 	uint32_t open_zones[ZBD_MAX_OPEN_ZONES];
 	bool fill_empty_zones_first;
 	uint32_t ns_id;
