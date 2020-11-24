@@ -1734,7 +1734,6 @@ static struct fio_zone_info *zbd_convert_to_open_zone(struct thread_data *td,
 
 found_candidate_zone:
 
-
 		if (new_zone_idx == zone_idx) {
 			dprint(FD_ZBD, "%s(%s): found candidate zone %d, wp = 0x%lX, wp + bs = 0x%llX, finish = %d\n",
 					__func__, f->file_name, new_zone_idx, z->wp, (z->wp + io_u->buflen), z->finish_zone);
@@ -2002,8 +2001,8 @@ static void zbd_queue_io(struct thread_data *td,
 		z->dev_wp = io_u->offset;
 	}
 
-	dprint(FD_ZBD, "%s: queued I/O (0x%llX, 0x%llX, 0x%lX) for zone %u, q-len = %u\n",
-		f->file_name, io_u->offset, io_u->buflen, z->dev_wp, zone_idx, z->io_q_count);
+	dprint(FD_ZBD, "%s: queued I/O (0x%llX, 0x%llX, 0x%lX) for zone %u, q-len = %u, id = %d\n",
+		f->file_name, io_u->offset, io_u->buflen, z->dev_wp, zone_idx, z->io_q_count, td->thread_number);
 
 	switch (io_u->ddir) {
 	case DDIR_WRITE:
@@ -2367,6 +2366,10 @@ enum io_u_action zbd_adjust_block(struct thread_data *td, struct io_u *io_u)
 			zl = &f->zbd_info->zone_info[f->max_zone + 1];
 			zb = zbd_find_zone(td, io_u, zb, zl);
 			if (!zb) {
+				/* if not able to find another written to zone and random reads
+				 * then pick random offset in current zone or start of zone for sequential
+				 * if read_beyond_wp is set
+				 * */
 				zb = orig_zb;
 				if (td->o.read_beyond_wp) {
 					if (td_random(td) || (td->o.perc_rand[DDIR_WRITE] > 0)) {
@@ -2380,7 +2383,7 @@ enum io_u_action zbd_adjust_block(struct thread_data *td, struct io_u *io_u)
 						return io_u_accept;
 					}
 				} else {
-					log_err("%s: zbd_find_zone(0x%llX, 0x%llX) failed, id = %d\n",
+					log_err("%s: zbd_find_zone(0x%llX, 0x%llX) for read failed, id = %d\n",
 						   f->file_name, io_u->offset, io_u->buflen, td->thread_number);
 					goto eof;
 				}
@@ -2451,22 +2454,18 @@ enum io_u_action zbd_adjust_block(struct thread_data *td, struct io_u *io_u)
 						 * if timed and last zone then wrap around
 						 *
 						 */
+						zone_idx_b++;
+						if (zone_idx_b > f->max_zone)
+							zone_idx_b = f->min_zone;
+						zb = &f->zbd_info->zone_info[zone_idx_b];
+						zb->reset_zone = true;
 						if (td->o.time_based) {
-							zone_idx_b++;
-							if (zone_idx_b > f->max_zone)
-								zone_idx_b = f->min_zone;
-							zb = &f->zbd_info->zone_info[zone_idx_b];
-							zb->reset_zone = true;
 							goto reset;
 						} else {
 							if ((td->o.num_filled_zones + td->o.num_open_zones) < td->o.num_zones) {
 								goto eof;
 							} else {
-								zone_idx_b++;
-								if (zone_idx_b > f->max_zone)
-									zone_idx_b = f->min_zone;
-								zb = &f->zbd_info->zone_info[zone_idx_b];
-								zb->reset_zone = true;
+								goto reset;
 							}
 						}
 					}
