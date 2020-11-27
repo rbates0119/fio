@@ -81,12 +81,11 @@ int zbd_report_zones(struct thread_data *td, struct fio_file *f,
 		if (strncmp("/dev/nvme", f->file_name, 9)) {
 			ret = blkzoned_report_zones(td, f, offset, zones, nr_zones);
 		} else {
-			sprintf(file_name, "namespace_%d.bin",nr_zones);
+			sprintf(file_name, "%s.bin",strchr(f->file_name, 'n'));
 			fd = open(file_name, O_RDONLY, S_IRUSR);
 			if (fd < 0) {
-				zbd_create_zone_data(td, nr_zones);
+				log_err("zbd_report_zones: No ns file: %s", file_name);
 			}
-
 			ret = zbd_zone_mgmt_report(td, f, offset, zones, nr_zones, true);
 			if (ret < 0)
 				ret = blkzoned_report_zones(td, f, offset, zones, nr_zones);
@@ -1455,7 +1454,7 @@ int zbd_finish_full_zone(struct thread_data *td, struct fio_zone_info *z,
     if ((td->o.issue_zone_finish ||
     		z->cond == ZBD_ZONE_COND_EXP_OPEN ||
 			z->cond == ZBD_ZONE_COND_IMP_OPEN || z->finish_zone) &&
-    		zone_io_finish && z->cond != ZBD_ZONE_COND_FULL) {
+    		zone_io_finish && z->cond != ZBD_ZONE_COND_FULL && 	(td->o.num_simulated_zones == 0)) {
 		dprint(FD_ZBD, "%s(%s): Issuing BLKFINISHZONE on zone %d, id = %d\n", __func__,
 				f->file_name, zone_idx, td->thread_number);
 		ret = zbd_issue_finish(td, f, z->start, f->zbd_info->zone_size);
@@ -1653,8 +1652,8 @@ static bool zbd_open_zone(struct thread_data *td, const struct io_u *io_u,
 
 	// Issue an explicit open with ZRWAA bit set via io-passtrhu.
 	if (td->o.zrwa_alloc) {
-		if (z->cond == ZBD_ZONE_COND_EMPTY ||
-				z->cond == ZBD_ZONE_COND_CLOSED) {
+		if ((z->cond == ZBD_ZONE_COND_EMPTY || z->cond == ZBD_ZONE_COND_CLOSED) &&
+				td->o.num_simulated_zones == 0) {
 			if(!zbd_issue_exp_open_zrwa(f, zone_idx, z->start >> NVME_ZONE_LBA_SHIFT, td->o.ns_id))
 				goto out;
 			z->cond = ZBD_ZONE_COND_EXP_OPEN;

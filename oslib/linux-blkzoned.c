@@ -271,7 +271,7 @@ int zbd_zone_mgmt_report(struct thread_data *td, struct fio_file *f,
 			goto out;
 		}
 	} else {
-		sprintf(file_name, "namespace_%d.bin",nr_zones);
+		sprintf(file_name, "%s.bin",strchr(td->o.filename, 'n'));
 
 		fd = open(file_name, O_RDONLY, S_IRUSR);
 		if (fd < 0) {
@@ -296,8 +296,8 @@ int zbd_zone_mgmt_report(struct thread_data *td, struct fio_file *f,
 		z->wp = zone_log->wp << 12;
 		z->capacity = zone_log->capacity << 12;
 		z->attr = zone_log->zone_attrs;
-		log_err("zbd_zone_mgmt_report %s: for zone at slba 0x%llX, wp = 0x%llX, capacity =  = 0x%llX, state = %d.\n",
-			file_name, zone_log->slba, zone_log->wp, zone_log->capacity, zone_log->zone_state);
+//		log_err("zbd_zone_mgmt_report %s: for zone at slba 0x%llX, wp = 0x%llX, capacity =  = 0x%llX, state = %d.\n",
+//			file_name, zone_log->slba, zone_log->wp, zone_log->capacity, zone_log->zone_state);
 
 		switch (zone_log->zone_type) {
 		case BLK_ZONE_TYPE_CONVENTIONAL:
@@ -311,8 +311,8 @@ int zbd_zone_mgmt_report(struct thread_data *td, struct fio_file *f,
 			break;
 		default:
 			td_verror(td, errno, "invalid zone type");
-			log_err("zbd_zone_mgmt_report %s: invalid type %d for zone at sector %llu.\n",
-				f->file_name, zone_log->zone_type, (unsigned long long)(offset >> 9));
+			log_err("zbd_zone_mgmt_report %s: invalid type %d for zone %d at sector %llu, id = %d.\n",
+				f->file_name, zone_log->zone_type, i, (unsigned long long)(offset >> 9), td->thread_number);
 			ret = -EIO;
 			goto out;
 		}
@@ -350,47 +350,6 @@ out:
 	return ret;
 }
 
-int zbd_create_zone_data(struct thread_data *td, unsigned int nr_zones)
-{
-	struct nvme_zone_report_header	hdr;
-	struct nvme_zone_log zone_log;
-	unsigned int i;
-	int fd;
-	char file_name[20];
-	sprintf(file_name, "namespace_%d.bin",nr_zones);
-
-	fd = open(file_name, O_CREAT | O_WRONLY, S_IWUSR);
-	if (fd < 0) {
-		return -errno;
-	}
-
-	hdr.nr_zones = nr_zones;
-	if (write(fd, (void*)&hdr, sizeof(hdr)) < sizeof(zone_log)) {
-		close (fd);
-		return -1;
-	}
-	zone_log.capacity = 0x43500;
-	zone_log.wp = 0x00000;
-	zone_log.slba = 0x00000;
-	zone_log.zone_type = 2;
-	zone_log.zone_state = NVME_ZONE_EMPTY;
-
-	dprint(FD_ZBD, "zbd_zone_mgmt_report: num zones = %d, id = %d\n", nr_zones, td->thread_number);
-	for (i = 0; i < nr_zones; i++) {
-
-		if (write(fd, (void*)&zone_log, sizeof(zone_log)) < sizeof(zone_log)) {
-			close (fd);
-			return -1;
-		}
-
-		zone_log.slba += 0x80000;
-		zone_log.wp = zone_log.slba;
-
-	}
-
-	return nr_zones;
-}
-
 bool zbd_update_zone_data(struct thread_data *td, uint64_t wp, uint8_t state, unsigned int zone)
 {
 //	struct nvme_zone_report_headerhdr;
@@ -399,10 +358,7 @@ bool zbd_update_zone_data(struct thread_data *td, uint64_t wp, uint8_t state, un
 	char file_name[20];
 	off_t offset = sizeof(struct nvme_zone_report_header) + (zone * sizeof(struct nvme_zone_log));
 
-	sprintf(file_name, "namespace_%d.bin",td->o.num_simulated_zones);
-
-	log_err("zbd_update_zone_data: zone = %u, id = %d, wp = 0x%lX, state = %u, offset = %lu\n",
-			zone, td->thread_number, wp, state, offset);
+	sprintf(file_name, "%s.bin",strchr(td->o.filename, 'n'));
 
 	fd = open(file_name, O_RDWR, S_IRUSR | S_IWUSR);
 	if (fd < 0) {
@@ -417,7 +373,7 @@ bool zbd_update_zone_data(struct thread_data *td, uint64_t wp, uint8_t state, un
 	}
 	lseek(fd, offset, SEEK_SET);
 	zone_log.wp = wp;
-	zone_log.zone_state = state;
+	zone_log.zone_state = state << 4;
 	if (write(fd, (void*)&zone_log, sizeof(zone_log)) < sizeof(zone_log)) {
 		close (fd);
 		return false;
