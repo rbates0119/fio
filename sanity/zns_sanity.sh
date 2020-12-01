@@ -46,6 +46,14 @@ then
   printf "\n bs128k_zrwa.fio failed\n"
   exit 1
 fi
+echo "mq-deadline" | tee /sys/block/nvme1n1/queue/scheduler
+printf "\n starting seq_readwrite_5o_pct_timed.fio\n"
+fio seq_readwrite_5o_pct_timed.fio --output=sanity.txt
+if [ $? != 0 ] ; 
+then
+  printf "\n seq_readwrite_5o_pct_timed.fio failed\n"
+  exit 1
+fi
 printf "\n Delete zones and create new namespace with 600 zones and format\n"
 nvme delete-ns /dev/nvme1 -n 0xffffffff
 nvme create-ns -s 0x12C00000 -c 0x12c00000 /dev/nvme1 -b 4096 -csi 2  #600 zones
