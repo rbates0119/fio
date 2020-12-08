@@ -2,11 +2,11 @@
 rm sanity*.txt
 printf "\n Delete zones and create new namespaces with 300 zone and format\n"
 nvme delete-ns /dev/nvme1 -n 0xffffffff
-nvme create-ns -s 0x9600000 -c 0x9600000 /dev/nvme1 -b 4096 -csi 2  #300 zones
+nvme create-ns -s 0x9600000 -c 0x9600000 /dev/nvme1 -f 2 --csi 2  #300 zones
 nvme attach-ns /dev/nvme1 -c 0 -n 1
 sleep 5
 nvme format /dev/nvme1n1 -l 2 -f
-nvme create-ns -s 0x9600000 -c 0x9600000 /dev/nvme1 -b 4096 -csi 2  #300 zones
+nvme create-ns -s 0x9600000 -c 0x9600000 /dev/nvme1 -f 2 --csi 2  #300 zones
 nvme attach-ns /dev/nvme1 -c 0 -n 2
 sleep 5
 nvme format /dev/nvme1n2 -l 2 -f
@@ -34,7 +34,7 @@ then
 fi
 printf "\n Delete zones and create new namespace with 300 zones and format\n"
 nvme delete-ns /dev/nvme1 -n 0xffffffff
-nvme create-ns -s 0x9600000 -c 0x9600000 /dev/nvme1 -b 4096 -csi 2  #300 zones
+nvme create-ns -s 0x9600000 -c 0x9600000 /dev/nvme1 -f 2 --csi 2  #300 zones
 nvme attach-ns /dev/nvme1 -c 0 -n 1
 sleep 5
 nvme format /dev/nvme1n1 -l 2 -f
@@ -56,7 +56,7 @@ then
 fi
 printf "\n Delete zones and create new namespace with 600 zones and format\n"
 nvme delete-ns /dev/nvme1 -n 0xffffffff
-nvme create-ns -s 0x12C00000 -c 0x12c00000 /dev/nvme1 -b 4096 -csi 2  #600 zones
+nvme create-ns -s 0x12C00000 -c 0x12c00000 /dev/nvme1 -f 2 --csi 2  #600 zones
 nvme attach-ns /dev/nvme1 -c 0 -n 1
 sleep 5
 nvme format /dev/nvme1n1 -l 2 -f
@@ -276,7 +276,7 @@ then
 fi
 printf "\n Delete zones and create new namespace with 36 zones and format\n"
 nvme delete-ns /dev/nvme1 -n 0xffffffff
-nvme create-ns -s 0x1200000 -c 0x1200000 /dev/nvme1 -b 4096 -csi 2  #36 zones
+nvme create-ns -s 0x1200000 -c 0x1200000 /dev/nvme1 -f 2 --csi 2  #36 zones
 nvme attach-ns /dev/nvme1 -c 0 -n 1
 sleep 5
 nvme format /dev/nvme1n1 -l 2 -f
@@ -317,7 +317,7 @@ printf "\n Delete zones and create new zone and format\n"
 nvme delete-ns /dev/nvme1 -n 0xffffffff
 nvme create-ns -s 0x80000 -c 0x80000 /dev/nvme1 -b 4096 -csi 0  
 nvme attach-ns /dev/nvme1 -c 0 -n 1
-nvme create-ns -s 0x1200000 -c 0x1200000 /dev/nvme1 -b 4096 -csi 2  #36 zones
+nvme create-ns -s 0x1200000 -c 0x1200000 /dev/nvme1 -f 2 --csi 2  #36 zones
 nvme attach-ns /dev/nvme1 -c 0 -n 2
 sleep 5
 nvme format /dev/nvme1n1 -l 2 -f
@@ -359,7 +359,7 @@ then
 fi
 printf "\n Delete zones and create new zone and format\n"
 sudo nvme delete-ns /dev/nvme1 -n 0xffffffff
-sudo nvme create-ns -s 0x600000 -c 0x600000 /dev/nvme1 -b 4096 -csi 2  #12 zones
+sudo nvme create-ns -s 0x600000 -c 0x600000 /dev/nvme1 -f 2 --csi 2  #12 zones
 sudo nvme attach-ns /dev/nvme1 -c 0 -n 1
 sleep 5
 sudo nvme format /dev/nvme1n1 -l 2 -f
