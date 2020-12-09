@@ -664,6 +664,7 @@ static int parse_zone_info(struct thread_data *td, struct fio_file *f)
 						     PTHREAD_MUTEX_RECURSIVE);
 			p->start = z->start;
 			p->capacity = z->capacity;
+			p->prev_commit_lba = z->start;
 			if (td->o.zrwa_alloc && td->o.dynamic_qd && (td->o.td_ddir & TD_DDIR_WRITE)) {
 				p->zone_io_q = zone_q_buf + (j * zone_io_q_size); // j is zone-idx
 				p->last_io = 0;
@@ -673,6 +674,7 @@ static int parse_zone_info(struct thread_data *td, struct fio_file *f)
 			case ZBD_ZONE_COND_NOT_WP:
 			case ZBD_ZONE_COND_FULL:
 				p->wp = p->start + p->capacity;
+				p->prev_commit_lba = p->wp;
 				break;
 			case ZBD_ZONE_COND_CLOSED:
 			case ZBD_ZONE_COND_EXP_OPEN:
@@ -708,6 +710,7 @@ static int parse_zone_info(struct thread_data *td, struct fio_file *f)
 					p->wp = z->wp;
 					p->dev_wp = z->wp;
 					p->cond = z->cond;
+					p->prev_commit_lba = p->wp;
 					/* If not zrwa mode and zone has zrwa allocation then issue finish zone when full */
 					if (!td->o.zrwa_alloc && (z->attr & NVME_ZONE_ATTR_RWA_ALLOCATED)) {
 						p->finish_zone = 1;
@@ -725,6 +728,8 @@ static int parse_zone_info(struct thread_data *td, struct fio_file *f)
 				assert(z->start <= z->wp);
 				assert(z->wp <= z->start + zone_size);
 				p->wp = z->wp;
+				p->dev_wp = z->wp;
+				p->prev_commit_lba = p->wp;
 				break;
 			}
 			p->type = z->type;
@@ -1092,6 +1097,7 @@ static int zbd_reset_range(struct thread_data *td, struct fio_file *f,
 		f->zbd_info->sectors_with_data -= z->wp - z->start;
 		pthread_mutex_unlock(&f->zbd_info->mutex);
 		z->wp = z->start;
+		z->prev_commit_lba = z->start;
 		z->dev_wp = z->start;
 		z->verify_block = 0;
 		if (!open)
@@ -1190,6 +1196,7 @@ close:
 		z->last_io = 0;
 		z->io_q_count = 0;
 		z->reset_zone = 0;
+		z->open = 0;
 	}
 
 	return;
@@ -1452,6 +1459,7 @@ int zbd_finish_full_zone(struct thread_data *td, struct fio_zone_info *z,
 		z->io_q_count = 0;
 		z->finish_zone = 0;
 		z->reset_zone = 0;
+		z->open = 0;
 		z->wp = z->start + z->capacity;
 
 		for (i = 0; i < td->o.num_open_zones; i++) {
@@ -1641,6 +1649,7 @@ static bool zbd_open_zone(struct thread_data *td, const struct io_u *io_u,
 	td->o.open_zones[td->o.num_open_zones++] = zone_idx;
 	td->num_open_zones++;
 	z->open = 1;
+	z->prev_commit_lba = z->wp;
 	dprint(FD_ZBD, "%s: opening zone %d, id = %d, open_zones = %d, total_open = %d%s \n",
 			f->file_name, zone_idx, td->thread_number, td->o.num_open_zones, td->num_open_zones, td->o.zrwa_alloc ? " with ZRWA": "");
 	dprint(FD_ZBD, "zbd_open_zone: zone %d start = 0x%lX, wp = 0x%lX\n",
@@ -1995,8 +2004,15 @@ static void zbd_queue_io(struct thread_data *td,
 	if (td->o.zrwa_alloc && td->o.dynamic_qd && (io_u->ddir == DDIR_WRITE)) {
 		assert(z->io_q_count < td->o.iodepth + 1);
 		z->zone_io_q[z->io_q_count++] = io_u->offset;
-		if (io_u->offset >= (z->dev_wp + ZRWA_SIZE_BYTES))
-			z->dev_wp += (io_u->offset - (z->dev_wp + ZRWA_SIZE_BYTES));
+		if (!td->o.exp_commit) {
+			if (io_u->offset >= (z->dev_wp + ZRWA_SIZE_BYTES)) {
+					z->dev_wp += (io_u->offset - (z->dev_wp + ZRWA_SIZE_BYTES));
+			}
+		} else {
+			if ((io_u->offset % td->o.commit_gran) == 0) {
+				z->dev_wp = io_u->offset;
+			}
+		}
 	} else if (io_u->ddir == DDIR_WRITE) {
 		z->dev_wp = io_u->offset;
 	}
@@ -2080,6 +2096,7 @@ static void zbd_put_io(struct thread_data *td, const struct io_u *io_u)
 	int ret;
 	uint32_t zone_idx, zone_q_io_idx;
 
+
 	if (!zbd_info)
 		return;
 
@@ -2130,21 +2147,27 @@ static void zbd_put_io(struct thread_data *td, const struct io_u *io_u)
 
 	if (td->o.exp_commit) {
 	    if (io_u->buflen < td->o.commit_gran) {
-		    if ((io_u->offset + io_u->buflen) >= td->o.commit_gran &&
-			    !((io_u->offset + io_u->buflen) % td->o.commit_gran)) {
-		    if(!zbd_issue_commit_zone(f, zone_idx,
-		    		(((io_u->offset + io_u->buflen) >> NVME_ZONE_LBA_SHIFT) - 1),
+		    if ((z->prev_commit_lba > z->start) && (z->prev_commit_lba % td->o.commit_gran) == 0) {
+				if(!zbd_issue_commit_zone(f, zone_idx,
+					((z->prev_commit_lba >> NVME_ZONE_LBA_SHIFT) - 1),
 		    		(z->start >> NVME_ZONE_LBA_SHIFT), td->o.ns_id))
-			    dprint(FD_ZBD, "commit zone failed on zone %d, at offset %llu\n",
-							    zone_idx, io_u->offset + io_u->buflen);
+					dprint(FD_ZBD, "commit zone failed on zone %d, at offset 0x%lX\n",
+					    zone_idx, ((z->prev_commit_lba >> NVME_ZONE_LBA_SHIFT) - 1));
 		    }
+	    	z->prev_commit_lba += io_u->buflen;
 	    } else {
 		    //In case io_u->buflen >= td->o.commit_gran
-		    if(!zbd_issue_commit_zone(f, zone_idx,
-		    		(((io_u->offset + io_u->buflen) >> NVME_ZONE_LBA_SHIFT) - 1),
-		    		z->start >> NVME_ZONE_LBA_SHIFT, td->o.ns_id))
-			    dprint(FD_ZBD, "commit zone failed on zone %d, at offset %llu\n",
-				    zone_idx, io_u->offset + io_u->buflen);
+			if(!zbd_issue_commit_zone(f, zone_idx,
+				(((z->prev_commit_lba + io_u->buflen) >> NVME_ZONE_LBA_SHIFT) - 1),
+				z->start >> NVME_ZONE_LBA_SHIFT, td->o.ns_id)) {
+					log_err("commit zone failed on zone %d, at offset 0x%llX, prev = 0x%lX, open = %d\n",
+						zone_idx, (((z->prev_commit_lba + io_u->buflen) >> NVME_ZONE_LBA_SHIFT) - 1),
+						z->prev_commit_lba, z->open);
+	    	} else {
+				z->prev_commit_lba += io_u->buflen;
+				z->dev_wp = z->prev_commit_lba;
+			}
+
 	    }
 	}
 
