@@ -54,6 +54,15 @@ then
   printf "\n seq_readwrite_5o_pct_timed.fio failed\n"
   exit 1
 fi
+nvme zns reset-zone /dev/nvme1n1 -a -s 0 -n 1
+echo "none" | tee /sys/block/nvme1n1/queue/scheduler
+printf "\n starting explicit_commit_64k_256qd.fio\n"
+fio explicit_commit_64k_256qd.fio --output=sanity.txt
+if [ $? != 0 ] ; 
+then
+  printf "\n explicit_commit_64k_256qd.fio failed\n"
+  exit 1
+fi
 printf "\n Delete zones and create new namespace with 600 zones and format\n"
 nvme delete-ns /dev/nvme1 -n 0xffffffff
 nvme create-ns -s 0x12C00000 -c 0x12c00000 /dev/nvme1 -f 2 --csi 2  #600 zones
