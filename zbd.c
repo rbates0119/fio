@@ -707,6 +707,7 @@ static int parse_zone_info(struct thread_data *td, struct fio_file *f)
 						     PTHREAD_MUTEX_RECURSIVE);
 			p->start = z->start;
 			p->capacity = z->capacity;
+			p->prev_commit_lba = z->start;
 			if (td->o.zrwa_alloc && td->o.dynamic_qd && (td->o.td_ddir & TD_DDIR_WRITE)) {
 				p->zone_io_q = zone_q_buf + (j * zone_io_q_size); // j is zone-idx
 				p->last_io = 0;
@@ -716,6 +717,7 @@ static int parse_zone_info(struct thread_data *td, struct fio_file *f)
 			case ZBD_ZONE_COND_NOT_WP:
 			case ZBD_ZONE_COND_FULL:
 				p->wp = p->start + p->capacity;
+				p->prev_commit_lba = p->wp;
 				break;
 			case ZBD_ZONE_COND_CLOSED:
 			case ZBD_ZONE_COND_EXP_OPEN:
@@ -768,6 +770,8 @@ static int parse_zone_info(struct thread_data *td, struct fio_file *f)
 				assert(z->start <= z->wp);
 				assert(z->wp <= z->start + zone_size);
 				p->wp = z->wp;
+				p->dev_wp = z->wp;
+				p->prev_commit_lba = p->wp;
 				break;
 			}
 			p->type = z->type;
@@ -1095,6 +1099,7 @@ static int zbd_reset_range(struct thread_data *td, struct fio_file *f,
 		f->zbd_info->sectors_with_data -= z->wp - z->start;
 		pthread_mutex_unlock(&f->zbd_info->mutex);
 		z->wp = z->start;
+		z->prev_commit_lba = z->start;
 		z->dev_wp = z->start;
 		z->verify_block = 0;
 		if (!open)
@@ -1193,6 +1198,7 @@ close:
 		z->last_io = 0;
 		z->io_q_count = 0;
 		z->reset_zone = 0;
+		z->open = 0;
 	}
 
 	return;
@@ -1440,7 +1446,7 @@ int zbd_finish_full_zone(struct thread_data *td, struct fio_zone_info *z,
     		z->cond == ZBD_ZONE_COND_EXP_OPEN ||
 			z->cond == ZBD_ZONE_COND_IMP_OPEN || z->finish_zone) &&
     		zone_io_finish && z->cond != ZBD_ZONE_COND_FULL) {
-		dprint(FD_ZBD, "%s(%s): Issuing BLKFINISHZONE on zone %d, id = %d\n", __func__,
+    		dprint(FD_ZBD, "%s(%s): Issuing BLKFINISHZONE on zone %d, id = %d\n", __func__,
 				f->file_name, zone_idx, td->thread_number);
 		ret = zbd_issue_finish(td, f, z->start, f->zbd_info->zone_size);
 		if (ret < 0) {
@@ -1455,6 +1461,7 @@ int zbd_finish_full_zone(struct thread_data *td, struct fio_zone_info *z,
 		z->io_q_count = 0;
 		z->finish_zone = 0;
 		z->reset_zone = 0;
+		z->open = 0;
 		z->wp = z->start + z->capacity;
 
 		for (i = 0; i < td->o.num_open_zones; i++) {
@@ -1996,8 +2003,15 @@ static void zbd_queue_io(struct thread_data *td,
 	if (td->o.zrwa_alloc && td->o.dynamic_qd && (io_u->ddir == DDIR_WRITE)) {
 		assert(z->io_q_count < td->o.iodepth + 1);
 		z->zone_io_q[z->io_q_count++] = io_u->offset;
-		if (io_u->offset >= (z->dev_wp + ZRWA_SIZE_BYTES))
-			z->dev_wp += (io_u->offset - (z->dev_wp + ZRWA_SIZE_BYTES));
+		if (!td->o.exp_commit) {
+			if (io_u->offset >= (z->dev_wp + ZRWA_SIZE_BYTES)) {
+					z->dev_wp += (io_u->offset - (z->dev_wp + ZRWA_SIZE_BYTES));
+			}
+		} else {
+			if ((io_u->offset % td->o.commit_gran) == 0) {
+				z->dev_wp = io_u->offset;
+			}
+		}
 	} else if (io_u->ddir == DDIR_WRITE) {
 		z->dev_wp = io_u->offset;
 	}
@@ -2081,6 +2095,7 @@ static void zbd_put_io(struct thread_data *td, const struct io_u *io_u)
 	int ret;
 	uint32_t zone_idx, zone_q_io_idx;
 
+
 	if (!zbd_info)
 		return;
 
@@ -2131,21 +2146,27 @@ static void zbd_put_io(struct thread_data *td, const struct io_u *io_u)
 
 	if (td->o.exp_commit) {
 	    if (io_u->buflen < td->o.commit_gran) {
-		    if ((io_u->offset + io_u->buflen) >= td->o.commit_gran &&
-			    !((io_u->offset + io_u->buflen) % td->o.commit_gran)) {
-		    if(!zbd_issue_commit_zone(f, zone_idx,
-		    		(((io_u->offset + io_u->buflen) / zbd_info->block_size) - 1),
-		    		(z->start / zbd_info->block_size), td->o.ns_id))
-			    dprint(FD_ZBD, "commit zone failed on zone %d, at offset %llu\n",
-							    zone_idx, io_u->offset + io_u->buflen);
+		    if ((z->prev_commit_lba > z->start) && (z->prev_commit_lba % td->o.commit_gran) == 0) {
+				if(!zbd_issue_commit_zone(f, zone_idx,
+					((z->prev_commit_lba / f->zbd_info->block_size) - 1),
+		    		(z->start / f->zbd_info->block_size), td->o.ns_id))
+					dprint(FD_ZBD, "commit zone failed on zone %d, at offset 0x%lX\n",
+					    zone_idx, ((z->prev_commit_lba / f->zbd_info->block_size) - 1));
 		    }
+	    	z->prev_commit_lba += io_u->buflen;
 	    } else {
 		    //In case io_u->buflen >= td->o.commit_gran
-		    if(!zbd_issue_commit_zone(f, zone_idx,
-		    		(((io_u->offset + io_u->buflen) / zbd_info->block_size) - 1),
-		    		(z->start / zbd_info->block_size), td->o.ns_id))
-			    dprint(FD_ZBD, "commit zone failed on zone %d, at offset %llu\n",
-				    zone_idx, io_u->offset + io_u->buflen);
+			if(!zbd_issue_commit_zone(f, zone_idx,
+				(((z->prev_commit_lba + io_u->buflen) / f->zbd_info->block_size) - 1),
+				(z->start  / f->zbd_info->block_size), td->o.ns_id)) {
+					log_err("commit zone failed on zone %d, at offset 0x%llX, prev = 0x%lX, open = %d\n",
+						zone_idx, (((z->prev_commit_lba + io_u->buflen) / f->zbd_info->block_size) - 1),
+						z->prev_commit_lba, z->open);
+	    	} else {
+				z->prev_commit_lba += io_u->buflen;
+				z->dev_wp = z->prev_commit_lba;
+			}
+
 	    }
 	}
 

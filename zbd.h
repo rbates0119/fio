@@ -54,6 +54,7 @@ struct fio_zone_info {
 	uint32_t		ow_count;
 	uint32_t		pending_ios;
 	uint64_t		prev_ow_lba;
+	uint64_t		prev_commit_lba;
 	uint8_t			finish_pct;
 	enum zbd_zone_type	type:2;
 	enum zbd_zone_cond	cond:4;

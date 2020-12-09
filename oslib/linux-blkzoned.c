@@ -550,12 +550,12 @@ bool zbd_issue_commit_zone(const struct fio_file *f, uint32_t zone_idx, uint64_t
 	cmd.addr       = (__u64)(uintptr_t)NULL;
 	cmd.data_len   = 0;
 
-	dprint(FD_ZBD, "Issuing commit_zone to zone %d, slba %lu, nsid %d, lba = %lu\n", zone_idx,
+	dprint(FD_ZBD, "Issuing commit_zone to zone %d, slba 0x%lX, nsid %d, lba = 0x%lX\n", zone_idx,
 						slba, nsid, lba);
 	ret = ioctl(f->fd, NVME_IOCTL_IO_CMD, &cmd);
 	if (ret > 0) {
 		perror("zbd_issue_commit_zone failed - ioctl returned:");
-		dprint(FD_ZBD, "zbd_issue_commit_zone failed: slba = 0x%lX \n", slba);
+		log_err("zbd_issue_commit_zone failed: slba = 0x%lX, ret = %X \n", slba, ret);
 		return false;
 	}
 	return true;
