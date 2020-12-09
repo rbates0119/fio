@@ -94,6 +94,7 @@ struct zoned_block_device_info {
 	uint32_t		max_open_zones;
 	pthread_mutex_t		mutex;
 	uint64_t		zone_size;
+	uint16_t        block_size;
 	uint64_t		sectors_with_data;
 	uint32_t		zone_size_log2;
 	uint32_t		nr_zones;

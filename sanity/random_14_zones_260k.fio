@@ -1,0 +1,14 @@
+[zns-writes]
+name=zns-writes
+filename=/dev/nvme1n1
+ioengine=libaio
+zonemode=zbd
+direct=1
+numjobs=1
+time_based=1
+runtime=5M
+rw=randwrite
+bs=260K
+iodepth=32
+max_open_zones=14
+zonesize=2147483648

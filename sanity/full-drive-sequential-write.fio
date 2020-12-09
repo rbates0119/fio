@@ -1,0 +1,12 @@
+[zc-seq-write]
+filename=/dev/nvme1n1
+rw=write
+bs=128K
+ba=4K
+direct=1
+size=1200G
+zonemode=zbd
+max_open_zones=12
+ioengine=libaio
+iodepth=1
+io_size=2TB

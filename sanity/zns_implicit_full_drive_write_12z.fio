@@ -1,0 +1,24 @@
+[seq-write_bs128K_qd256]
+name=zc-seq-write
+filename=/dev/nvme1n1
+rw=randwrite
+bs=64K
+direct=1
+numjobs=1
+# Num_Zones_In_Drive*2 Zones in Bytes - Account for FULL zones chosen for IO by other active zones.
+size=1200G
+io_size=646200M
+ns_id=1
+zrwa_alloc=1
+zonemode=zbd
+max_open_zones=12
+ioengine=libaio
+# The io_depth is maintained currently by FIO on a per controller basis.
+# This needs to change so that the FIO maintains max allowed QD(ie not exceeding ZRWA)
+# on all the 12 zones.
+# Low QD set to not violate ZRWA
+iodepth=4
+#cpumask=cpus_allowed
+issue_zone_finish=1
+commit_gran=16384
+

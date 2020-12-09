@@ -1,0 +1,22 @@
+# This INI is used to do a FULL drive write using random zones.
+# No ZRWA is associated.
+# 12 active zone is present at a time.
+[seq-write_bs128K_qd256]
+name=zc-rand-write
+filename=/dev/nvme1n1
+rw=randwrite
+bs=1M
+direct=1
+numjobs=1
+ioscheduler=mq-deadline
+io_size=646200M
+size=1200G
+zonemode=zbd
+max_open_zones=12
+ioengine=libaio
+#Sequential zone needs to operate at QD1.
+iodepth=1
+#cpumask=cpus_allowed
+reset_all_zones_first=1
+#issue_zone_finish=1
+

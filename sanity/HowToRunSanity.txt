@@ -1,0 +1,37 @@
+Instructions for enabling the git pre-commit hook or running the sanity scripts from a linux terminal window.
+
+If your device is named something other than /dev/nvme0n1 then you will need to update all the scripts with the corect device/file name.  
+open a terminal window in your fio sanity folder
+change the following commands to represent your device.  Change the nvme1n1 to your device name
+then copy and paste the commands into the terminal window to execute:
+grep -rl nvme0n1 | xargs sed -i 's/nvme0n1/nvme1n1/g'
+grep -rl nvme0 | xargs sed -i 's/nvme0/nvme1/g'
+
+You will need to have python2 or python3 installed.  
+Check if you have one of them:
+python2 --version
+python3 --version
+If not install one of them.
+If you have python2 then execute the following command in the sanity folder:
+grep -rl python3 | xargs sed -i 's/python3/python2/g'
+
+To run the scripts use the following command in the sanity folder:
+sudo bash zns_sanity.sh
+
+to enable the git pre-commit hook to run when issuing a git commit
+from fio folder edit .git/hooks/pre-commit
+Copy and paste the following 8 lines into pre-commit file then save
+#!/bin/bash
+cd sanity
+sudo sh zns_sanity.sh
+if [ $? != 0 ] ; 
+then
+  exit 1
+fi
+exit 0
+
+Make sure the pre-commit is executable:
+chmod +x .git/hooks/pre-commit
+
+
+

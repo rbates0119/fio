@@ -16,7 +16,7 @@ extern int blkzoned_report_zones(struct thread_data *td,
 				struct zbd_zone *zones, unsigned int nr_zones);
 extern int zbd_zone_mgmt_report(struct thread_data *td, struct fio_file *f,
 		  uint64_t offset, struct zbd_zone *zones,
-		  unsigned int nr_zones);
+		  unsigned int nr_zones, uint16_t block_size);
 extern int blkzoned_reset_wp(struct thread_data *td, const struct fio_file *f,
 				uint64_t offset, uint64_t length);
 extern char *read_file(const char *path);
@@ -58,7 +58,7 @@ static inline int blkzoned_report_zones(struct thread_data *td,
 }
 static int zbd_zone_mgmt_report(struct thread_data *td, struct fio_file *f,
 		  uint64_t offset, struct zbd_zone *zones,
-		  unsigned int nr_zones)
+		  unsigned int nr_zones, uint16_t block_size);
 {
 	return -EIO;
 }
