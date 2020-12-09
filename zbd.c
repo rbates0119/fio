@@ -1446,7 +1446,7 @@ int zbd_finish_full_zone(struct thread_data *td, struct fio_zone_info *z,
     		z->cond == ZBD_ZONE_COND_EXP_OPEN ||
 			z->cond == ZBD_ZONE_COND_IMP_OPEN || z->finish_zone) &&
     		zone_io_finish && z->cond != ZBD_ZONE_COND_FULL) {
-		dprint(FD_ZBD, "%s(%s): Issuing BLKFINISHZONE on zone %d, id = %d\n", __func__,
+    		dprint(FD_ZBD, "%s(%s): Issuing BLKFINISHZONE on zone %d, id = %d\n", __func__,
 				f->file_name, zone_idx, td->thread_number);
 		ret = zbd_issue_finish(td, f, z->start, f->zbd_info->zone_size);
 		if (ret < 0) {
@@ -2148,19 +2148,19 @@ static void zbd_put_io(struct thread_data *td, const struct io_u *io_u)
 	    if (io_u->buflen < td->o.commit_gran) {
 		    if ((z->prev_commit_lba > z->start) && (z->prev_commit_lba % td->o.commit_gran) == 0) {
 				if(!zbd_issue_commit_zone(f, zone_idx,
-					((z->prev_commit_lba >> NVME_ZONE_LBA_SHIFT) - 1),
-		    		(z->start >> NVME_ZONE_LBA_SHIFT), td->o.ns_id))
+					((z->prev_commit_lba / f->zbd_info->block_size) - 1),
+		    		(z->start / f->zbd_info->block_size), td->o.ns_id))
 					dprint(FD_ZBD, "commit zone failed on zone %d, at offset 0x%lX\n",
-					    zone_idx, ((z->prev_commit_lba >> NVME_ZONE_LBA_SHIFT) - 1));
+					    zone_idx, ((z->prev_commit_lba / f->zbd_info->block_size) - 1));
 		    }
 	    	z->prev_commit_lba += io_u->buflen;
 	    } else {
 		    //In case io_u->buflen >= td->o.commit_gran
 			if(!zbd_issue_commit_zone(f, zone_idx,
-				(((z->prev_commit_lba + io_u->buflen) >> NVME_ZONE_LBA_SHIFT) - 1),
-				z->start >> NVME_ZONE_LBA_SHIFT, td->o.ns_id)) {
+				(((z->prev_commit_lba + io_u->buflen) / f->zbd_info->block_size) - 1),
+				(z->start  / f->zbd_info->block_size), td->o.ns_id)) {
 					log_err("commit zone failed on zone %d, at offset 0x%llX, prev = 0x%lX, open = %d\n",
-						zone_idx, (((z->prev_commit_lba + io_u->buflen) >> NVME_ZONE_LBA_SHIFT) - 1),
+						zone_idx, (((z->prev_commit_lba + io_u->buflen) / f->zbd_info->block_size) - 1),
 						z->prev_commit_lba, z->open);
 	    	} else {
 				z->prev_commit_lba += io_u->buflen;
