@@ -315,11 +315,19 @@ static bool zbd_verify_sizes(struct thread_data *td)
 			f->file_offset = new_offset;
 		}
 
-		if (!td_random(td) || td->o.perc_rand[DDIR_WRITE] == 0) {
+		if ((!td_random(td) || td->o.perc_rand[DDIR_WRITE] == 0) &&
+				(td->o.td_ddir != TD_DDIR_READ) && (td->o.td_ddir != TD_DDIR_RANDREAD)){
 			if (td->o.max_open_zones > 1) {
 				log_info("%s: changed max_open_zones from %d to 1 for sequential workload, id = %d\n",
 						f->file_name, td->o.max_open_zones, td->thread_number);
 				td->o.max_open_zones = 1;
+			}
+		}
+		if ((td->o.td_ddir == TD_DDIR_READ) || (td->o.td_ddir == TD_DDIR_RANDREAD)) {
+			if (td->o.max_open_zones > 1) {
+				log_info("%s: max_open_zones not used for read workload, set to 0 for id = %d\n",
+						f->file_name, td->thread_number);
+				td->o.max_open_zones = 0;
 			}
 		}
 		if (td->o.num_zones > 0)
