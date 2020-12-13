@@ -27,8 +27,6 @@ static unsigned int g_max_open_zones;
 static unsigned int g_mar;
 static unsigned int g_rand_seed = 0;
 
-#define NVME_ZONE_LBA_SHIFT		12
-
 /**
  * zbd_get_zoned_model - Get a device zoned model
  * @td: FIO thread data
@@ -69,7 +67,7 @@ int zbd_get_zoned_model(struct thread_data *td, struct fio_file *f,
  */
 int zbd_report_zones(struct thread_data *td, struct fio_file *f,
 		     uint64_t offset, struct zbd_zone *zones,
-		     unsigned int nr_zones)
+		     unsigned int nr_zones, uint16_t block_size)
 {
 	int ret;
 
@@ -80,7 +78,7 @@ int zbd_report_zones(struct thread_data *td, struct fio_file *f,
 		if (strncmp("/dev/nvme", f->file_name, 9)) {
 			ret = blkzoned_report_zones(td, f, offset, zones, nr_zones);
 		} else {
-			ret = zbd_zone_mgmt_report(td, f, offset, zones, nr_zones);
+			ret = zbd_zone_mgmt_report(td, f, offset, zones, nr_zones, block_size);
 			if (ret < 0)
 				ret = blkzoned_report_zones(td, f, offset, zones, nr_zones);
 		}
@@ -317,11 +315,19 @@ static bool zbd_verify_sizes(struct thread_data *td)
 			f->file_offset = new_offset;
 		}
 
-		if (!td_random(td) || td->o.perc_rand[DDIR_WRITE] == 0) {
+		if ((!td_random(td) || td->o.perc_rand[DDIR_WRITE] == 0) &&
+				(td->o.td_ddir != TD_DDIR_READ) && (td->o.td_ddir != TD_DDIR_RANDREAD)){
 			if (td->o.max_open_zones > 1) {
 				log_info("%s: changed max_open_zones from %d to 1 for sequential workload, id = %d\n",
 						f->file_name, td->o.max_open_zones, td->thread_number);
 				td->o.max_open_zones = 1;
+			}
+		}
+		if ((td->o.td_ddir == TD_DDIR_READ) || (td->o.td_ddir == TD_DDIR_RANDREAD)) {
+			if (td->o.max_open_zones > 1) {
+				log_info("%s: max_open_zones not used for read workload, set to 0 for id = %d\n",
+						f->file_name, td->thread_number);
+				td->o.max_open_zones = 0;
 			}
 		}
 		if (td->o.num_zones > 0)
@@ -604,9 +610,51 @@ static int parse_zone_info(struct thread_data *td, struct fio_file *f)
 			dprint(FD_ZBD, "parse_zone_info: reset zones failed \n");
 		td->o.reset_all_zones_first = false;
 	}
+
+	if (zbd_identify_ns(td, f, ns, ns_zns, td->o.ns_id)) {
+		bs = 4096;
+		for (i = 0; i <= ns->nlbaf; i++) {
+			if (i == (ns->flbas & 0xf))
+				bs = 1 << ns->lbaf[i].ds;
+		}
+		if (ns_zns->mar > 0)
+		{
+			g_mar = ns_zns->mar;
+		} else {
+			g_mar = ((struct nvme_id_ns_zns*)ns_zns)->mar;
+		}
+		if (g_max_open_zones > (g_mar + 1))
+		{
+			log_err("fio: %s job parameter max_open_zones = %u is greater than maximum active resources = %llu (zero based).\n",
+				f->file_name, g_max_open_zones, (unsigned long long)g_mar);
+			ret = -EINVAL;
+			goto out;
+		}
+		dprint(FD_ZBD, "parse_zone_info: zrwas = %d, lbaf = 0x%X, bs = %d \n", le16_to_cpu(ns_zns->zrwas), ns->nlbaf, bs);
+		if (ns_zns->zrwas > 0) {
+			zrwas = ns_zns->zrwas;
+		} else {
+			zrwas = ((struct nvme_id_ns_zns*)ns_zns)->zrwas;
+		}
+		dprint(FD_ZBD, "parse_zone_info: g_mar = %d\n", g_mar);
+		if (td->o.zrwa_alloc) {
+			if (td_write(td) && !td->o.dynamic_qd) {
+				if ((zrwas * bs) <  (td->o.bs[1] * td->o.iodepth)) {
+					log_err("fio: %s iodepth = %d * blocksize = 0x%llX (0x%llX) is greater than zrwas = %d \n",
+						f->file_name, td->o.iodepth, td->o.bs[1], (td->o.iodepth * td->o.bs[1]), (zrwas * bs));
+					ret = -EINVAL;
+					goto out;
+				}
+			}
+		}
+	} else {
+		dprint(FD_ZBD, "parse_zone_info: identify failed id = %d \n", td->thread_number);
+		g_mar = 11;
+		bs =  4096;
+	}
 	zones[0].len = 0;
-	nrz = zbd_report_zones(td, f, 0, zones, ZBD_REPORT_MAX_ZONES);
-	if (nrz < 0) {
+	nrz = zbd_report_zones(td, f, 0, zones, ZBD_REPORT_MAX_ZONES, bs);
+	if (nrz <= 0) {
 		ret = nrz;
 		log_info("fio: report zones (offset 0) failed for %s (%d).\n",
 			 f->file_name, -ret);
@@ -619,10 +667,13 @@ static int parse_zone_info(struct thread_data *td, struct fio_file *f)
 			zone_size = zones[0].len;
 	else
 		zone_size = zones[1].start - zones[0].start;
-	nr_zones = (f->real_file_size + zone_size - 1) / zone_size;
+
+	nr_zones = ((f->real_file_size) + zone_size - 1) / zone_size;
+	dprint(FD_ZBD, "parse_zone_info: num zones = %d, zone log header zr_zones = %d, zone size = 0x%lX, file size = 0x%lX\n",
+			nr_zones, nrz, zone_size, f->real_file_size);
 	if (nr_zones != nrz) {
-		dprint(FD_ZBD, "parse_zone_info: num zones = %d, zone log header number of zones = %d\n",
-				nr_zones, nrz);
+		dprint(FD_ZBD, "parse_zone_info: num zones = %d, zone log header zr_zones = %d, zone size = 0x%lX, file size = 0x%lX\n",
+				nr_zones, nrz, zone_size, f->real_file_size);
 		nr_zones = min(nr_zones, nrz);
 	}
 	if (td->o.zone_size == 0) {
@@ -664,6 +715,7 @@ static int parse_zone_info(struct thread_data *td, struct fio_file *f)
 						     PTHREAD_MUTEX_RECURSIVE);
 			p->start = z->start;
 			p->capacity = z->capacity;
+			p->prev_commit_lba = z->start;
 			if (td->o.zrwa_alloc && td->o.dynamic_qd && (td->o.td_ddir & TD_DDIR_WRITE)) {
 				p->zone_io_q = zone_q_buf + (j * zone_io_q_size); // j is zone-idx
 				p->last_io = 0;
@@ -673,6 +725,7 @@ static int parse_zone_info(struct thread_data *td, struct fio_file *f)
 			case ZBD_ZONE_COND_NOT_WP:
 			case ZBD_ZONE_COND_FULL:
 				p->wp = p->start + p->capacity;
+				p->prev_commit_lba = p->wp;
 				break;
 			case ZBD_ZONE_COND_CLOSED:
 			case ZBD_ZONE_COND_EXP_OPEN:
@@ -688,10 +741,10 @@ static int parse_zone_info(struct thread_data *td, struct fio_file *f)
 					dprint(FD_ZBD, "parse_zone_info: closed zone = %d, 0x%lX, wp = 0x%lX, open zones = %d, attr = %d\n",
 							j, z->start, z->wp, td->o.num_open_zones, z->attr);
 				if (td->o.reset_active_zones_first) {
-					if (!zbd_zone_reset(td, f, (p->start >> NVME_ZONE_LBA_SHIFT), false, td->o.ns_id))	{
+					if (!zbd_zone_reset(td, f, (p->start / bs), false, td->o.ns_id))	{
 						td_verror(td, errno, "resetting zone failed");
 						log_err("%s: resetting wp 0x%lX failed (%d).\n",
-							f->file_name, (p->start >> NVME_ZONE_LBA_SHIFT), errno);
+							f->file_name, (p->start / bs), errno);
 						ret = -1;
 						goto out;
 					} else {
@@ -725,6 +778,8 @@ static int parse_zone_info(struct thread_data *td, struct fio_file *f)
 				assert(z->start <= z->wp);
 				assert(z->wp <= z->start + zone_size);
 				p->wp = z->wp;
+				p->dev_wp = z->wp;
+				p->prev_commit_lba = p->wp;
 				break;
 			}
 			p->type = z->type;
@@ -744,55 +799,14 @@ static int parse_zone_info(struct thread_data *td, struct fio_file *f)
 		if (j >= nr_zones)
 			break;
 		nrz = zbd_report_zones(td, f, offset,
-					    zones, ZBD_REPORT_MAX_ZONES);
+					    zones, ZBD_REPORT_MAX_ZONES, bs);
 		if (nrz < 0) {
 			ret = nrz;
 			log_info("fio: report zones (offset %llu) failed for %s (%d).\n",
-			 	 (unsigned long long)(offset >> NVME_ZONE_LBA_SHIFT),
+			 	 (unsigned long long)(offset / bs),
 				 f->file_name, -ret);
 			goto out;
 		}
-	}
-
-	if (zbd_identify_ns(td, f, ns, ns_zns, td->o.ns_id)) {
-		bs = 4096;
-		for (i = 0; i <= ns->nlbaf; i++) {
-			if (ns->flbas & 0xf)
-				bs = ns->lbaf[i].ds;
-		}
-		if (ns_zns->mar > 0)
-		{
-			g_mar = ns_zns->mar;
-		} else {
-			g_mar = ((struct nvme_id_ns_zns*)ns_zns)->mar;
-		}
-		if (g_max_open_zones > (g_mar + 1))
-		{
-			log_err("fio: %s job parameter max_open_zones = %u is greater than maximum active resources = %llu (zero based).\n",
-				f->file_name, g_max_open_zones, (unsigned long long)g_mar);
-			ret = -EINVAL;
-			goto out;
-		}
-		dprint(FD_ZBD, "parse_zone_info: zrwas = %d, bs = %d \n", le16_to_cpu(ns_zns->zrwas), bs);
-		if (ns_zns->zrwas > 0) {
-			zrwas = ns_zns->zrwas;
-		} else {
-			zrwas = ((struct nvme_id_ns_zns*)ns_zns)->zrwas;
-		}
-		dprint(FD_ZBD, "parse_zone_info: g_mar = %d\n", g_mar);
-		if (td->o.zrwa_alloc) {
-			if (td_write(td) && !td->o.dynamic_qd) {
-				if ((zrwas * bs) <  (td->o.bs[1] * td->o.iodepth)) {
-					log_err("fio: %s iodepth = %d * blocksize = 0x%llX (0x%llX) is greater than zrwas = %d \n",
-						f->file_name, td->o.iodepth, td->o.bs[1], (td->o.iodepth * td->o.bs[1]), (zrwas * bs));
-					ret = -EINVAL;
-					goto out;
-				}
-			}
-		}
-	} else {
-		dprint(FD_ZBD, "parse_zone_info: identify failed id = %d \n", td->thread_number);
-		g_mar = 11;
 	}
 	if (td->o.zrwa_alloc) {
 		if (td_write(td)) {
@@ -820,6 +834,7 @@ static int parse_zone_info(struct thread_data *td, struct fio_file *f)
 
 	f->zbd_info = zbd_info;
 	f->zbd_info->zone_size = zone_size;
+	f->zbd_info->block_size = bs;
 	f->zbd_info->zone_size_log2 = is_power_of_2(zone_size) ?
 		ilog2(zone_size) : 0;
 	f->zbd_info->nr_zones = nr_zones;
@@ -1092,6 +1107,7 @@ static int zbd_reset_range(struct thread_data *td, struct fio_file *f,
 		f->zbd_info->sectors_with_data -= z->wp - z->start;
 		pthread_mutex_unlock(&f->zbd_info->mutex);
 		z->wp = z->start;
+		z->prev_commit_lba = z->start;
 		z->dev_wp = z->start;
 		z->verify_block = 0;
 		if (!open)
@@ -1190,6 +1206,7 @@ close:
 		z->last_io = 0;
 		z->io_q_count = 0;
 		z->reset_zone = 0;
+		z->open = 0;
 	}
 
 	return;
@@ -1437,7 +1454,7 @@ int zbd_finish_full_zone(struct thread_data *td, struct fio_zone_info *z,
     		z->cond == ZBD_ZONE_COND_EXP_OPEN ||
 			z->cond == ZBD_ZONE_COND_IMP_OPEN || z->finish_zone) &&
     		zone_io_finish && z->cond != ZBD_ZONE_COND_FULL) {
-		dprint(FD_ZBD, "%s(%s): Issuing BLKFINISHZONE on zone %d, id = %d\n", __func__,
+    		dprint(FD_ZBD, "%s(%s): Issuing BLKFINISHZONE on zone %d, id = %d\n", __func__,
 				f->file_name, zone_idx, td->thread_number);
 		ret = zbd_issue_finish(td, f, z->start, f->zbd_info->zone_size);
 		if (ret < 0) {
@@ -1452,6 +1469,7 @@ int zbd_finish_full_zone(struct thread_data *td, struct fio_zone_info *z,
 		z->io_q_count = 0;
 		z->finish_zone = 0;
 		z->reset_zone = 0;
+		z->open = 0;
 		z->wp = z->start + z->capacity;
 
 		for (i = 0; i < td->o.num_open_zones; i++) {
@@ -1505,9 +1523,7 @@ static void zbd_end_zone_io(struct thread_data *td, const struct io_u *io_u,
 				pthread_mutex_unlock(&f->zbd_info->mutex);
 			}
 		} else if (io_u->offset + io_u->buflen >= zbd_zone_capacity_end(td, z) && z->pending_ios == 0) {
-			pthread_mutex_lock(&f->zbd_info->mutex);
 			zbd_close_zone(td, f, z - f->zbd_info->zone_info);
-			pthread_mutex_unlock(&f->zbd_info->mutex);
 		} else {
 			if ((z->pending_ios == 0) &&
 					((z->start + z->capacity) - (io_u->offset + io_u->buflen) > 0) &&
@@ -1631,7 +1647,7 @@ static bool zbd_open_zone(struct thread_data *td, const struct io_u *io_u,
 	if (td->o.zrwa_alloc) {
 		if (z->cond == ZBD_ZONE_COND_EMPTY ||
 				z->cond == ZBD_ZONE_COND_CLOSED) {
-			if(!zbd_issue_exp_open_zrwa(f, zone_idx, z->start >> NVME_ZONE_LBA_SHIFT, td->o.ns_id))
+			if(!zbd_issue_exp_open_zrwa(f, zone_idx, z->start / f->zbd_info->block_size, td->o.ns_id))
 				goto out;
 			z->cond = ZBD_ZONE_COND_EXP_OPEN;
 		}
@@ -1995,8 +2011,15 @@ static void zbd_queue_io(struct thread_data *td,
 	if (td->o.zrwa_alloc && td->o.dynamic_qd && (io_u->ddir == DDIR_WRITE)) {
 		assert(z->io_q_count < td->o.iodepth + 1);
 		z->zone_io_q[z->io_q_count++] = io_u->offset;
-		if (io_u->offset >= (z->dev_wp + ZRWA_SIZE_BYTES))
-			z->dev_wp += (io_u->offset - (z->dev_wp + ZRWA_SIZE_BYTES));
+		if (!td->o.exp_commit) {
+			if (io_u->offset >= (z->dev_wp + ZRWA_SIZE_BYTES)) {
+					z->dev_wp += (io_u->offset - (z->dev_wp + ZRWA_SIZE_BYTES));
+			}
+		} else {
+			if ((io_u->offset % td->o.commit_gran) == 0) {
+				z->dev_wp = io_u->offset;
+			}
+		}
 	} else if (io_u->ddir == DDIR_WRITE) {
 		z->dev_wp = io_u->offset;
 	}
@@ -2080,6 +2103,7 @@ static void zbd_put_io(struct thread_data *td, const struct io_u *io_u)
 	int ret;
 	uint32_t zone_idx, zone_q_io_idx;
 
+
 	if (!zbd_info)
 		return;
 
@@ -2130,21 +2154,27 @@ static void zbd_put_io(struct thread_data *td, const struct io_u *io_u)
 
 	if (td->o.exp_commit) {
 	    if (io_u->buflen < td->o.commit_gran) {
-		    if ((io_u->offset + io_u->buflen) >= td->o.commit_gran &&
-			    !((io_u->offset + io_u->buflen) % td->o.commit_gran)) {
-		    if(!zbd_issue_commit_zone(f, zone_idx,
-		    		(((io_u->offset + io_u->buflen) >> NVME_ZONE_LBA_SHIFT) - 1),
-		    		(z->start >> NVME_ZONE_LBA_SHIFT), td->o.ns_id))
-			    dprint(FD_ZBD, "commit zone failed on zone %d, at offset %llu\n",
-							    zone_idx, io_u->offset + io_u->buflen);
+		    if ((z->prev_commit_lba > z->start) && (z->prev_commit_lba % td->o.commit_gran) == 0) {
+				if(!zbd_issue_commit_zone(f, zone_idx,
+					((z->prev_commit_lba / f->zbd_info->block_size) - 1),
+		    		(z->start / f->zbd_info->block_size), td->o.ns_id))
+					dprint(FD_ZBD, "commit zone failed on zone %d, at offset 0x%lX\n",
+					    zone_idx, ((z->prev_commit_lba / f->zbd_info->block_size) - 1));
 		    }
+	    	z->prev_commit_lba += io_u->buflen;
 	    } else {
 		    //In case io_u->buflen >= td->o.commit_gran
-		    if(!zbd_issue_commit_zone(f, zone_idx,
-		    		(((io_u->offset + io_u->buflen) >> NVME_ZONE_LBA_SHIFT) - 1),
-		    		z->start >> NVME_ZONE_LBA_SHIFT, td->o.ns_id))
-			    dprint(FD_ZBD, "commit zone failed on zone %d, at offset %llu\n",
-				    zone_idx, io_u->offset + io_u->buflen);
+			if(!zbd_issue_commit_zone(f, zone_idx,
+				(((z->prev_commit_lba + io_u->buflen) / f->zbd_info->block_size) - 1),
+				(z->start  / f->zbd_info->block_size), td->o.ns_id)) {
+					log_err("commit zone failed on zone %d, at offset 0x%llX, prev = 0x%lX, open = %d\n",
+						zone_idx, (((z->prev_commit_lba + io_u->buflen) / f->zbd_info->block_size) - 1),
+						z->prev_commit_lba, z->open);
+	    	} else {
+				z->prev_commit_lba += io_u->buflen;
+				z->dev_wp = z->prev_commit_lba;
+			}
+
 	    }
 	}
 
@@ -2621,7 +2651,7 @@ reset:
 
 			if (td->o.zrwa_alloc) {
 				if(!zbd_issue_exp_open_zrwa(f,
-				zbd_zone_idx(f, zb->start), (zb->start >> NVME_ZONE_LBA_SHIFT), td->o.ns_id))
+				zbd_zone_idx(f, zb->start), (zb->start / f->zbd_info->block_size), td->o.ns_id))
 					return -1;
 				zb->cond = ZBD_ZONE_COND_EXP_OPEN;
 			}

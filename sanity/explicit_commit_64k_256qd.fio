@@ -1,0 +1,21 @@
+[seq-write_exp_commit]
+name=zc-seq-write
+filename=/dev/nvme1n1
+rw=randwrite
+bs=64K
+direct=1
+numjobs=1
+size=100%
+# 300 zones = 300 * 1077m
+io_size=323100M
+zrwa_alloc=1
+zonemode=zbd
+max_open_zones=12
+ioengine=libaio
+#High QD set as dynamic_qd is enabled.
+iodepth=256
+#cpumask=cpus_allowed
+exp_commit=1
+issue_zone_finish=1
+fill_empty_zones_first=1
+commit_gran=16384

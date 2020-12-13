@@ -1,0 +1,17 @@
+[FIO_BL_WL_01]
+direct=1 
+ioengine=libaio 
+filename=/dev/nvme1n1
+rw=readwrite 
+percentage_random=0 
+rwmixread=50 
+bssplit=64k 
+blockalign=4k 
+iodepth=64 
+runtime=900 
+time_based=1 
+zonemode=zbd 
+reset_all_zones_first=1 
+reset_active_zones_first=0 
+max_open_zones=6 
+size=50%

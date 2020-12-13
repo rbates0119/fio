@@ -223,7 +223,7 @@ out:
 
 int zbd_zone_mgmt_report(struct thread_data *td, struct fio_file *f,
 			  uint64_t offset, struct zbd_zone *zones,
-			  unsigned int nr_zones)
+			  unsigned int nr_zones, uint16_t block_size)
 {
 	struct nvme_zone_report_header	*hdr = NULL;
 	struct nvme_zone_log *zone_log;
@@ -275,9 +275,9 @@ int zbd_zone_mgmt_report(struct thread_data *td, struct fio_file *f,
 	for (i = 0; i < nr_zones; i++, z++) {
 		zone_log = (struct nvme_zone_log *)buff;
 
-		z->start = zone_log->slba << 12;
-		z->wp = zone_log->wp << 12;
-		z->capacity = zone_log->capacity << 12;
+		z->start = zone_log->slba * block_size;
+		z->wp = zone_log->wp * block_size;
+		z->capacity = zone_log->capacity * block_size;
 		z->attr = zone_log->zone_attrs;
 
 		switch (zone_log->zone_type) {
@@ -409,17 +409,21 @@ bool zbd_identify_ns(struct thread_data *td, struct fio_file *f, void *ns, void 
 
 	cmd.opcode     = 6;				//nvme_admin_identify
 	cmd.nsid       = nsid;
-	cmd.cdw10      = 5;
-	cmd.cdw11      = 0;
+	cmd.cdw10      = 0; // NVME_ID_CNS_NS = 0x00,  Identify Namespace data structure
+						// for the specified NSID or the common namespace capabilities for the NVM
+	cmd.cdw11      = 0; // csi = 0 for cns
 	cmd.addr       = (__u64)(uintptr_t)ns;
-	cmd.data_len   = 4096; //sizeof(struct nvme_id_ns_zns);
+	cmd.data_len   = sizeof (struct nvme_id_ns); //4096;
 
 	ret = ioctl(fd, NVME_IOCTL_ADMIN_CMD, &cmd);
 	if (ret > 0) {
 		perror("ioctl returned:");
 	}
-	cmd.cdw11      = 2 << 24;
+	cmd.cdw10      = 5;	// 	NVME_ID_CNS_CSI_ID_NS = 0x05, Identify I/O Command Set specific Namespace data structure
+						// for the specified NSID for the I/O Command Set
+	cmd.cdw11      = 2 << 24; // csi = 2 for zns
 	cmd.addr       = (__u64)(uintptr_t)ns_zns;
+	cmd.data_len   = sizeof (struct nvme_id_ns_zns); //4096;
 	ret = ioctl(fd, NVME_IOCTL_ADMIN_CMD, &cmd);
 	if (ret > 0) {
 		perror("zbd_identify_ns: ioctl returned:");
@@ -546,12 +550,12 @@ bool zbd_issue_commit_zone(const struct fio_file *f, uint32_t zone_idx, uint64_t
 	cmd.addr       = (__u64)(uintptr_t)NULL;
 	cmd.data_len   = 0;
 
-	dprint(FD_ZBD, "Issuing commit_zone to zone %d, slba %lu, nsid %d, lba = %lu\n", zone_idx,
+	dprint(FD_ZBD, "Issuing commit_zone to zone %d, slba 0x%lX, nsid %d, lba = 0x%lX\n", zone_idx,
 						slba, nsid, lba);
 	ret = ioctl(f->fd, NVME_IOCTL_IO_CMD, &cmd);
 	if (ret > 0) {
 		perror("zbd_issue_commit_zone failed - ioctl returned:");
-		dprint(FD_ZBD, "zbd_issue_commit_zone failed: slba = 0x%lX \n", slba);
+		log_err("zbd_issue_commit_zone failed: slba = 0x%lX, ret = %X \n", slba, ret);
 		return false;
 	}
 	return true;

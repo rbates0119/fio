@@ -2,11 +2,11 @@
 rm sanity*.txt
 printf "\n Delete zones and create new namespaces with 300 zone and format\n"
 nvme delete-ns /dev/nvme1 -n 0xffffffff
-nvme create-ns -s 0x9600000 -c 0x9600000 /dev/nvme1 -b 4096 -csi 2  #300 zones
+nvme create-ns -s 0x9600000 -c 0x9600000 /dev/nvme1 -f 2 --csi 2  #300 zones
 nvme attach-ns /dev/nvme1 -c 0 -n 1
 sleep 5
 nvme format /dev/nvme1n1 -l 2 -f
-nvme create-ns -s 0x9600000 -c 0x9600000 /dev/nvme1 -b 4096 -csi 2  #300 zones
+nvme create-ns -s 0x9600000 -c 0x9600000 /dev/nvme1 -f 2 --csi 2  #300 zones
 nvme attach-ns /dev/nvme1 -c 0 -n 2
 sleep 5
 nvme format /dev/nvme1n2 -l 2 -f
@@ -34,7 +34,7 @@ then
 fi
 printf "\n Delete zones and create new namespace with 300 zones and format\n"
 nvme delete-ns /dev/nvme1 -n 0xffffffff
-nvme create-ns -s 0x9600000 -c 0x9600000 /dev/nvme1 -b 4096 -csi 2  #300 zones
+nvme create-ns -s 0x9600000 -c 0x9600000 /dev/nvme1 -f 2 --csi 2  #300 zones
 nvme attach-ns /dev/nvme1 -c 0 -n 1
 sleep 5
 nvme format /dev/nvme1n1 -l 2 -f
@@ -46,9 +46,26 @@ then
   printf "\n bs128k_zrwa.fio failed\n"
   exit 1
 fi
+echo "mq-deadline" | tee /sys/block/nvme1n1/queue/scheduler
+printf "\n starting seq_readwrite_5o_pct_timed.fio\n"
+fio seq_readwrite_5o_pct_timed.fio --output=sanity.txt
+if [ $? != 0 ] ; 
+then
+  printf "\n seq_readwrite_5o_pct_timed.fio failed\n"
+  exit 1
+fi
+nvme zns reset-zone /dev/nvme1n1 -a -s 0 -n 1
+echo "none" | tee /sys/block/nvme1n1/queue/scheduler
+printf "\n starting explicit_commit_64k_256qd.fio\n"
+fio explicit_commit_64k_256qd.fio --output=sanity.txt
+if [ $? != 0 ] ; 
+then
+  printf "\n explicit_commit_64k_256qd.fio failed\n"
+  exit 1
+fi
 printf "\n Delete zones and create new namespace with 600 zones and format\n"
 nvme delete-ns /dev/nvme1 -n 0xffffffff
-nvme create-ns -s 0x12C00000 -c 0x12c00000 /dev/nvme1 -b 4096 -csi 2  #600 zones
+nvme create-ns -s 0x12C00000 -c 0x12c00000 /dev/nvme1 -f 2 --csi 2  #600 zones
 nvme attach-ns /dev/nvme1 -c 0 -n 1
 sleep 5
 nvme format /dev/nvme1n1 -l 2 -f
@@ -268,7 +285,7 @@ then
 fi
 printf "\n Delete zones and create new namespace with 36 zones and format\n"
 nvme delete-ns /dev/nvme1 -n 0xffffffff
-nvme create-ns -s 0x1200000 -c 0x1200000 /dev/nvme1 -b 4096 -csi 2  #36 zones
+nvme create-ns -s 0x1200000 -c 0x1200000 /dev/nvme1 -f 2 --csi 2  #36 zones
 nvme attach-ns /dev/nvme1 -c 0 -n 1
 sleep 5
 nvme format /dev/nvme1n1 -l 2 -f
@@ -309,7 +326,7 @@ printf "\n Delete zones and create new zone and format\n"
 nvme delete-ns /dev/nvme1 -n 0xffffffff
 nvme create-ns -s 0x80000 -c 0x80000 /dev/nvme1 -b 4096 -csi 0  
 nvme attach-ns /dev/nvme1 -c 0 -n 1
-nvme create-ns -s 0x1200000 -c 0x1200000 /dev/nvme1 -b 4096 -csi 2  #36 zones
+nvme create-ns -s 0x1200000 -c 0x1200000 /dev/nvme1 -f 2 --csi 2  #36 zones
 nvme attach-ns /dev/nvme1 -c 0 -n 2
 sleep 5
 nvme format /dev/nvme1n1 -l 2 -f
@@ -351,13 +368,27 @@ then
 fi
 printf "\n Delete zones and create new zone and format\n"
 sudo nvme delete-ns /dev/nvme1 -n 0xffffffff
-sudo nvme create-ns -s 0x600000 -c 0x600000 /dev/nvme1 -b 4096 -csi 2  #12 zones
+sudo nvme create-ns -s 0x600000 -c 0x600000 /dev/nvme1 -f 2 --csi 2  #12 zones
 sudo nvme attach-ns /dev/nvme1 -c 0 -n 1
 sleep 5
 sudo nvme format /dev/nvme1n1 -l 2 -f
 echo "mq-deadline" | tee /sys/block/nvme1n1/queue/scheduler
 printf "\n start zonesize_zonerange.fio.fio\n"
 fio zonesize_zonerange.fio --output=sanity.txt
+if [ $? != 0 ] ; 
+then
+  exit 1
+fi
+printf "\n Delete zones and create new zone and format\n"
+sudo nvme delete-ns /dev/nvme1 -n 0xffffffff
+sudo nvme create-ns /dev/nvme1 -s 0x100000 -c 0x100000 -f 0 --csi 0   
+sudo nvme attach-ns /dev/nvme1 -c 0 -n 1
+sudo nvme create-ns /dev/nvme1 -s 0xE2800000 -c 0xE2800000 -f 0 --csi 2 #906 zones
+sudo nvme attach-ns /dev/nvme1 -c 0 -n 2
+#sleep 5
+sudo nvme format /dev/nvme1 -n 0xffffffff -l 0 -f -r
+printf "\n start two_ns_bbc_bbz_512b_format.fio\n"
+fio two_ns_bbc_bbz_512b_format.fio --output=sanity.txt
 if [ $? != 0 ] ; 
 then
   exit 1
