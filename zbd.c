@@ -366,7 +366,7 @@ static bool zbd_verify_sizes(struct thread_data *td)
 
 		td->zbd_finish_capacity = f->zbd_info->zone_info[0].capacity;
 		cap_percent = (f->zbd_info->zone_info[0].capacity * td->o.finish_zone_pct) / 100;
-		td->zbd_finish_capacity = cap_percent & ~(td->o.bs[1] - 1);
+		td->zbd_finish_capacity = (uint64_t)((cap_percent / td->o.bs[1]) * td->o.bs[1]);
 
 		if (td->o.ddir_seq_add) {
 			td->zbd_finish_capacity = (((cap_percent / (td->o.bs[1] + td->o.ddir_seq_add)) *
@@ -1512,7 +1512,6 @@ static void zbd_end_zone_io(struct thread_data *td, const struct io_u *io_u,
 	int ret;
 
 	if (io_u->ddir == DDIR_WRITE){
-
 		if (td->o.issue_zone_finish || z->finish_zone) {
 			if (((z->io_q_count == 0) && (z->last_io == ZONE_LAST_IO_COMPLETED) && td->o.zrwa_alloc) ||
 				((((z->finish_zone || td->o.issue_zone_finish) && z->pending_ios == 0)
@@ -1522,13 +1521,9 @@ static void zbd_end_zone_io(struct thread_data *td, const struct io_u *io_u,
 					zbd_close_zone(td, f, z - f->zbd_info->zone_info);
 				pthread_mutex_unlock(&f->zbd_info->mutex);
 			}
-		} else if (io_u->offset + io_u->buflen >= zbd_zone_capacity_end(td, z) && z->pending_ios == 0) {
-			zbd_close_zone(td, f, z - f->zbd_info->zone_info);
-		} else {
-			if ((z->pending_ios == 0) &&
-					((z->start + z->capacity) - (io_u->offset + io_u->buflen) > 0) &&
+		} else if (z->pending_ios == 0) {
+			if (((z->start + z->capacity) - (io_u->offset + io_u->buflen) > 0) &&
 					(zbd_zone_capacity_end(td, z) - ((io_u->offset + io_u->buflen)) < io_u->buflen)) {
-
 				io_u_quiesce(td);
 				dprint(FD_ZBD, "%s: zbd_end_zone_io: at capacity (0x%llX, 0x%llX, 0x%lX), q-len = %u\n",
 					f->file_name, io_u->offset, io_u->buflen, z->dev_wp, z->io_q_count);
@@ -1536,6 +1531,10 @@ static void zbd_end_zone_io(struct thread_data *td, const struct io_u *io_u,
 				ret = zbd_finish_full_zone(td, z, io_u, true);
 				assert(ret==0);
 				pthread_mutex_unlock(&f->zbd_info->mutex);
+			} else {
+				if (io_u->offset + io_u->buflen >= zbd_zone_capacity_end(td, z)) {
+						zbd_close_zone(td, f, z - f->zbd_info->zone_info);
+				}
 			}
 		}
 	}
