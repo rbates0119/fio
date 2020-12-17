@@ -2311,7 +2311,7 @@ enum fio_ddir zbd_adjust_ddir(struct thread_data *td, struct io_u *io_u,
 		return ddir;
 
 	if ((((td->o.max_open_zones > 0) && (td->num_open_zones > 0)) ||
-			((td->o.max_open_zones == 0) && io_u->file->zbd_info->sectors_with_data > 0)) &&
+			((td->o.max_open_zones == 0) && io_u->file->zbd_info->sectors_with_data > 0)) ||
 		td->o.read_beyond_wp)
 		return DDIR_READ;
 
