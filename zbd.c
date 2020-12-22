@@ -23,7 +23,6 @@
 #include "zbd.h"
 
 static int g_ow;
-static unsigned int g_max_open_zones;
 static unsigned int g_mar;
 static unsigned int g_rand_seed = 0;
 
@@ -375,8 +374,9 @@ static bool zbd_verify_sizes(struct thread_data *td)
 		dprint(FD_ZBD, "zbd_verify_sizes: zone finish capacity = 0x%lX, cap_percent = 0x%llX, id = %d, \n",
 				td->zbd_finish_capacity, cap_percent, td->thread_number);
 
-		if ((td->o.zone_mode==ZONE_MODE_ZBD) && (strcmp(td->o.filename, f->file_name) == 0))
-			g_max_open_zones += td->o.max_open_zones;
+		if ((td->o.zone_mode==ZONE_MODE_ZBD) && (strcmp(td->o.filename, f->file_name) == 0)) {
+			f->zbd_info->max_open_zones += td->o.max_open_zones;
+		}
 
 		/* Remove any open zones outside of work area */
 
@@ -396,9 +396,15 @@ static bool zbd_verify_sizes(struct thread_data *td)
 				}
 			}
 		}
+		if (f->zbd_info->max_open_zones > (g_mar + 1))
+		{
+			log_err("fio: max_open_zones = %u for %s is greater than maximum active resources = %llu (zero based).\n",
+				f->zbd_info->max_open_zones, f->file_name, (unsigned long long)g_mar);
+			return false;
+		}
 
-		dprint(FD_ZBD, "zbd_verify_sizes: id = %d, max_zones = %d, open_zones = %d, max_open = %d\n",
-				td->thread_number, g_max_open_zones, td->o.num_open_zones, td->o.max_open_zones);
+		dprint(FD_ZBD, "zbd_verify_sizes: %s - id = %d, max_zones = %d, open_zones = %d, max_open = %d\n",
+				f->file_name, td->thread_number, f->zbd_info->max_open_zones, td->o.num_open_zones, td->o.max_open_zones);
 	}
 
 	return true;
@@ -623,13 +629,6 @@ static int parse_zone_info(struct thread_data *td, struct fio_file *f)
 		} else {
 			g_mar = ((struct nvme_id_ns_zns*)ns_zns)->mar;
 		}
-		if (g_max_open_zones > (g_mar + 1))
-		{
-			log_err("fio: %s job parameter max_open_zones = %u is greater than maximum active resources = %llu (zero based).\n",
-				f->file_name, g_max_open_zones, (unsigned long long)g_mar);
-			ret = -EINVAL;
-			goto out;
-		}
 		dprint(FD_ZBD, "parse_zone_info: zrwas = %d, lbaf = 0x%X, bs = %d \n", le16_to_cpu(ns_zns->zrwas), ns->nlbaf, bs);
 		if (ns_zns->zrwas > 0) {
 			zrwas = ns_zns->zrwas;
@@ -838,6 +837,7 @@ static int parse_zone_info(struct thread_data *td, struct fio_file *f)
 	f->zbd_info->zone_size_log2 = is_power_of_2(zone_size) ?
 		ilog2(zone_size) : 0;
 	f->zbd_info->nr_zones = nr_zones;
+	f->zbd_info->max_open_zones = 0;
 	zbd_info = NULL;
 	ret = 0;
 
@@ -883,7 +883,6 @@ static int zbd_create_zone_info(struct thread_data *td, struct fio_file *f)
 
 	if (ret == 0) {
 		f->zbd_info->model = zbd_model;
-		f->zbd_info->max_open_zones = td->o.max_open_zones;
 	}
 	return ret;
 }
@@ -1168,7 +1167,7 @@ static void zbd_close_zone(struct thread_data *td, const struct fio_file *f,
 	if (z->pending_ios && td_write(td) &&
 		!td_ioengine_flagged(td, FIO_SYNCIO))
 		io_u_quiesce(td);
-	if (g_max_open_zones && td->o.issue_zone_finish &&
+	if (f->zbd_info->max_open_zones && td->o.issue_zone_finish &&
 			(td->o.zrwa_alloc || (td->o.finish_zone_pct < 100))) {
 		// Handle the case where fio is started and all zones in the range
 		// are in full state. fio MO is to select a zone, open it, if it is
@@ -1786,7 +1785,7 @@ open_other_zone:
     /* Only z->mutex is held. */
 	/* Try to open a new zone. */
 
-    if ((g_max_open_zones > 0) && (td->o.num_open_zones < td->o.max_open_zones)) {
+    if ((f->zbd_info->max_open_zones > 0) && (td->o.num_open_zones < td->o.max_open_zones)) {
 
     	dprint(FD_ZBD, "%s(%s): try to open another zone, open zones = %d, max = %d\n", __func__,
     	       f->file_name, td->o.num_open_zones, td->o.max_open_zones);
