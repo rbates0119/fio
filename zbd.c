@@ -25,6 +25,9 @@
 static int g_ow;
 static unsigned int g_mar;
 static unsigned int g_rand_seed = 0;
+static int g_dev_ids;
+static char g_dev_name[16][12];
+static int g_max_open_zones[16] = {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0};
 
 /**
  * zbd_get_zoned_model - Get a device zoned model
@@ -263,8 +266,9 @@ static bool zbd_verify_sizes(struct thread_data *td)
 	struct fio_file *f;
 	uint64_t new_offset, new_end;
 	uint32_t zone_idx;
-	int i, j;
+	int i, j, dev_id = 0;
 	unsigned long long cap_percent;
+	bool found_dev = false;
 
 	for_each_file(td, f, j) {
 		if (!f->zbd_info)
@@ -376,6 +380,24 @@ static bool zbd_verify_sizes(struct thread_data *td)
 
 		if ((td->o.zone_mode==ZONE_MODE_ZBD) && (strcmp(td->o.filename, f->file_name) == 0)) {
 			f->zbd_info->max_open_zones += td->o.max_open_zones;
+
+			/* Find matching device names so the total max_open_zones for each device
+			 * can be calculated.
+			 */
+			for (i=0; i<g_dev_ids;i++) {
+				if (strncmp(f->file_name, g_dev_name[i], 11) == 0) {
+					g_max_open_zones[i] += td->o.max_open_zones;
+					dev_id = i;
+					found_dev = true;
+					break;
+				}
+			}
+			if (!found_dev) {
+				g_max_open_zones[g_dev_ids] += td->o.max_open_zones;
+				strncpy(g_dev_name[g_dev_ids], f->file_name, 11);
+				dev_id = g_dev_ids;
+				g_dev_ids++;
+			}
 		}
 
 		/* Remove any open zones outside of work area */
@@ -395,16 +417,31 @@ static bool zbd_verify_sizes(struct thread_data *td)
 					i--;
 				}
 			}
+		} else {
+			/* Add open zones not assigned in parse_zone_info
+			 * This can happen if multiple jobs are working in one namespace
+			 */
+			if (td->o.max_open_zones > 0) {
+				for (zone_idx = f->min_zone; zone_idx <= f->max_zone;  zone_idx++) {
+					z = &f->zbd_info->zone_info[zone_idx];
+					if ((z->cond == ZBD_ZONE_COND_EXP_OPEN) ||
+							(z->cond == ZBD_ZONE_COND_IMP_OPEN)) {
+						td->o.open_zones[td->o.num_open_zones++] = zone_idx;
+						td->num_open_zones++;
+					}
+				}
+			}
 		}
-		if (f->zbd_info->max_open_zones > (g_mar + 1))
+		if (g_max_open_zones[dev_id] > (g_mar + 1))
 		{
 			log_err("fio: max_open_zones = %u for %s is greater than maximum active resources = %llu (zero based).\n",
-				f->zbd_info->max_open_zones, f->file_name, (unsigned long long)g_mar);
+				g_max_open_zones[dev_id], f->file_name, (unsigned long long)g_mar);
 			return false;
 		}
 
-		dprint(FD_ZBD, "zbd_verify_sizes: %s - id = %d, max_zones = %d, open_zones = %d, max_open = %d\n",
-				f->file_name, td->thread_number, f->zbd_info->max_open_zones, td->o.num_open_zones, td->o.max_open_zones);
+		dprint(FD_ZBD, "zbd_verify_sizes: dev ids = %d, %s, %s - id = %d, max_zones = %d, open_zones = %d, max_open = %d, g_open = %d\n",
+			g_dev_ids, g_dev_name[g_dev_ids-1], f->file_name, td->thread_number,
+			f->zbd_info->max_open_zones, td->o.num_open_zones, td->o.max_open_zones, g_max_open_zones[dev_id]);
 	}
 
 	return true;
@@ -2178,7 +2215,7 @@ static void zbd_put_io(struct thread_data *td, const struct io_u *io_u)
 
 	zbd_end_zone_io(td, io_u, z);
 
-	if (td->o.zone_append) {
+	if ((td->o.zone_append) || (td->o.verify_backlog > 0)){
 		pthread_mutex_lock(&z->mutex);
 		if (z->pending_ios > 0) {
 			/*
