@@ -11,9 +11,6 @@
 #ifdef CONFIG_LIBAIO
 #include <libaio.h>
 #endif
-#ifdef CONFIG_GUASI
-#include <guasi.h>
-#endif
 
 enum {
 	IO_U_F_FREE		= 1 << 0,
@@ -106,15 +103,14 @@ struct io_u {
 	 * @success == true means that the I/O operation has been queued or
 	 * completed successfully.
 	 */
-	void (*zbd_queue_io)(struct thread_data *,
-			struct io_u *, int q, bool success);
+	void (*zbd_queue_io)(struct thread_data *td, struct io_u *, int q,
+			     bool success);
 
 	/*
 	 * ZBD mode zbd_put_io callback: called in after completion of an I/O
 	 * or commit of an async I/O to unlock the I/O target zone.
 	 */
-	void (*zbd_put_io)(struct thread_data *,
-				const struct io_u *);
+	void (*zbd_put_io)(struct thread_data *td, const struct io_u *);
 
 	/*
 	 * Callback for io completion
@@ -130,9 +126,6 @@ struct io_u {
 #endif
 #ifdef FIO_HAVE_SGIO
 		struct sg_io_hdr hdr;
-#endif
-#ifdef CONFIG_GUASI
-		guasi_req_t greq;
 #endif
 #ifdef CONFIG_SOLARISAIO
 		aio_result_t resultp;

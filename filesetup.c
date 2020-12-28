@@ -231,13 +231,12 @@ static int extend_file(struct thread_data *td, struct fio_file *f)
 						break;
 					log_info("fio: ENOSPC on laying out "
 						 "file, stopping\n");
-					break;
 				}
 				td_verror(td, errno, "write");
 			} else
 				td_verror(td, EIO, "write");
 
-			break;
+			goto err;
 		}
 	}
 
@@ -655,8 +654,7 @@ int generic_open_file(struct thread_data *td, struct fio_file *f)
 		}
 		flags |= OS_O_DIRECT | FIO_O_ATOMIC;
 	}
-	if (td->o.sync_io)
-		flags |= O_SYNC;
+	flags |= td->o.sync_io;
 	if (td->o.create_on_open && td->o.allow_create)
 		flags |= O_CREAT;
 skip_flags:
@@ -1139,6 +1137,8 @@ int setup_files(struct thread_data *td)
 		if (f->io_size == -1ULL)
 			total_size = -1ULL;
 		else {
+			uint64_t io_size;
+
                         if (o->size_percent && o->size_percent != 100) {
 				uint64_t file_size;
 
@@ -1150,7 +1150,14 @@ int setup_files(struct thread_data *td)
 
 				f->io_size -= (f->io_size % td_min_bs(td));
 			}
-			total_size += f->io_size;
+
+			io_size = f->io_size;
+			if (o->io_size_percent && o->io_size_percent != 100) {
+				io_size *= o->io_size_percent;
+				io_size /= 100;
+			}
+
+			total_size += io_size;
 		}
 
 		if (f->filetype == FIO_TYPE_FILE &&

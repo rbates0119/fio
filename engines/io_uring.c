@@ -67,6 +67,7 @@ struct ioring_data {
 	unsigned iodepth;
 	bool ioprio_class_set;
 	bool ioprio_set;
+	int prepped;
 
 	struct ioring_mmap mmap[3];
 };
@@ -83,6 +84,7 @@ struct ioring_options {
 	unsigned int nonvectored;
 	unsigned int uncached;
 	unsigned int nowait;
+	unsigned int force_async;
 };
 
 static const int ddir_to_op[2][2] = {
@@ -199,6 +201,15 @@ static struct fio_option options[] = {
 		.group	= FIO_OPT_G_IOURING,
 	},
 	{
+		.name	= "force_async",
+		.lname	= "Force async",
+		.type	= FIO_OPT_INT,
+		.off1	= offsetof(struct ioring_options, force_async),
+		.help	= "Set IOSQE_ASYNC every N requests",
+		.category = FIO_OPT_C_ENGINE,
+		.group	= FIO_OPT_G_IOURING,
+	},
+	{
 		.name	= NULL,
 	},
 };
@@ -259,14 +270,9 @@ static int fio_ioring_prep(struct thread_data *td, struct io_u *io_u)
 			sqe->ioprio = td->o.ioprio_class << 13;
 		if (ld->ioprio_set)
 			sqe->ioprio |= td->o.ioprio;
-		if (td->o.zone_append && io_u->ddir == DDIR_WRITE)
-			sqe->rw_flags |= RWF_ZONE_APPEND;
-		if ((td->o.zone_mode == ZONE_MODE_ZBD)
-		     && td->o.zone_append && io_u->ddir == DDIR_WRITE) {
-			sqe->off = io_u->zone_start_offset;
-		} else
-			sqe->off = io_u->offset;
- 	} else if (ddir_sync(io_u->ddir)) {
+		sqe->off = io_u->offset;
+		sqe->rw_flags = 0;
+	} else if (ddir_sync(io_u->ddir)) {
 		sqe->ioprio = 0;
 		if (io_u->ddir == DDIR_SYNC_FILE_RANGE) {
 			sqe->off = f->first_write;
@@ -281,6 +287,11 @@ static int fio_ioring_prep(struct thread_data *td, struct io_u *io_u)
 				sqe->fsync_flags |= IORING_FSYNC_DATASYNC;
 			sqe->opcode = IORING_OP_FSYNC;
 		}
+	}
+
+	if (o->force_async && ++ld->prepped == o->force_async) {
+		ld->prepped = 0;
+		sqe->flags |= IOSQE_ASYNC;
 	}
 
 	sqe->user_data = (unsigned long) io_u;
@@ -732,6 +743,12 @@ static int fio_ioring_init(struct thread_data *td)
 	struct ioring_data *ld;
 	struct thread_options *to = &td->o;
 
+	if (to->io_submit_mode == IO_MODE_OFFLOAD) {
+		log_err("fio: io_submit_mode=offload is not compatible (or "
+			"useful) with io_uring\n");
+		return 1;
+	}
+
 	/* sqthread submission requires registered files */
 	if (o->sqpoll_thread)
 		o->registerfiles = 1;
@@ -808,7 +825,7 @@ static int fio_ioring_close_file(struct thread_data *td, struct fio_file *f)
 static struct ioengine_ops ioengine = {
 	.name			= "io_uring",
 	.version		= FIO_IOOPS_VERSION,
-	.flags			= FIO_ASYNCIO_SYNC_TRIM,
+	.flags			= FIO_ASYNCIO_SYNC_TRIM | FIO_NO_OFFLOAD,
 	.init			= fio_ioring_init,
 	.post_init		= fio_ioring_post_init,
 	.io_u_init		= fio_ioring_io_u_init,

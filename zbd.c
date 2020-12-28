@@ -1154,9 +1154,7 @@ static int zbd_reset_range(struct thread_data *td, struct fio_file *f,
 		pthread_mutex_unlock(&z->mutex);
 	}
 
-	td->ts.nr_zone_resets += ze - zb;
-
-	return ret;
+	return 0;
 }
 
 static unsigned int zbd_zone_nr(struct zoned_block_device_info *zbd_info,
@@ -1172,6 +1170,8 @@ static unsigned int zbd_zone_nr(struct zoned_block_device_info *zbd_info,
  * @z: Zone to reset.
  *
  * Returns 0 upon success and a negative error code upon failure.
+ *
+ * The caller must hold z->mutex.
  */
 static int zbd_reset_zone(struct thread_data *td, struct fio_file *f,
 			  struct fio_zone_info *z, bool open)
@@ -2007,6 +2007,28 @@ zbd_find_zone(struct thread_data *td, struct io_u *io_u,
 	dprint(FD_ZBD, "%s: adjusting random read offset failed\n",
 	       f->file_name);
 	return NULL;
+}
+
+/**
+ * zbd_end_zone_io - update zone status at command completion
+ * @io_u: I/O unit
+ * @z: zone info pointer
+ *
+ * If the write command made the zone full, close it.
+ *
+ * The caller must hold z->mutex.
+ */
+static void zbd_end_zone_io(struct thread_data *td, const struct io_u *io_u,
+			    struct fio_zone_info *z)
+{
+	const struct fio_file *f = io_u->file;
+
+	if (io_u->ddir == DDIR_WRITE &&
+	    io_u->offset + io_u->buflen >= zbd_zone_capacity_end(z)) {
+		pthread_mutex_lock(&f->zbd_info->mutex);
+		zbd_close_zone(td, f, z - f->zbd_info->zone_info);
+		pthread_mutex_unlock(&f->zbd_info->mutex);
+	}
 }
 
 /**
