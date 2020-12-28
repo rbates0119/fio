@@ -2010,28 +2010,6 @@ zbd_find_zone(struct thread_data *td, struct io_u *io_u,
 }
 
 /**
- * zbd_end_zone_io - update zone status at command completion
- * @io_u: I/O unit
- * @z: zone info pointer
- *
- * If the write command made the zone full, close it.
- *
- * The caller must hold z->mutex.
- */
-static void zbd_end_zone_io(struct thread_data *td, const struct io_u *io_u,
-			    struct fio_zone_info *z)
-{
-	const struct fio_file *f = io_u->file;
-
-	if (io_u->ddir == DDIR_WRITE &&
-	    io_u->offset + io_u->buflen >= zbd_zone_capacity_end(z)) {
-		pthread_mutex_lock(&f->zbd_info->mutex);
-		zbd_close_zone(td, f, z - f->zbd_info->zone_info);
-		pthread_mutex_unlock(&f->zbd_info->mutex);
-	}
-}
-
-/**
  * zbd_queue_io - update the write pointer of a sequential zone
  * @td: fio thread data.
  * @io_u: I/O unit

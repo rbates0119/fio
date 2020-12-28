@@ -337,11 +337,6 @@ static void *helper_thread_main(void *data)
 		if (action == A_DO_STAT)
 			__show_running_run_stats();
 
-		if (status_interval) {
-			next_si = task_helper(&last_si, &ts, status_interval, __show_running_run_stats);
-			msec_to_next_event = min(next_si, msec_to_next_event);
-		}
-
 		next_log = calc_log_samples();
 		if (!next_log)
 			next_log = DISK_UTIL_MSEC;
