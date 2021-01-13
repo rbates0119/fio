@@ -327,6 +327,7 @@ void free_threads_shm(void)
 
 static void free_shm(void)
 {
+#ifndef FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION
 	if (nr_segments) {
 		flow_exit();
 		fio_debug_jobp = NULL;
@@ -343,6 +344,7 @@ static void free_shm(void)
 	fio_filelock_exit();
 	file_hash_exit();
 	scleanup();
+#endif
 }
 
 static int add_thread_segment(void)
@@ -971,13 +973,13 @@ static void init_rand_file_service(struct thread_data *td)
 	const unsigned int seed = td->rand_seeds[FIO_RAND_FILE_OFF];
 
 	if (td->o.file_service_type == FIO_FSERVICE_ZIPF) {
-		zipf_init(&td->next_file_zipf, nranges, td->zipf_theta, seed);
+		zipf_init(&td->next_file_zipf, nranges, td->zipf_theta, td->random_center, seed);
 		zipf_disable_hash(&td->next_file_zipf);
 	} else if (td->o.file_service_type == FIO_FSERVICE_PARETO) {
-		pareto_init(&td->next_file_zipf, nranges, td->pareto_h, seed);
+		pareto_init(&td->next_file_zipf, nranges, td->pareto_h, td->random_center, seed);
 		zipf_disable_hash(&td->next_file_zipf);
 	} else if (td->o.file_service_type == FIO_FSERVICE_GAUSS) {
-		gauss_init(&td->next_file_gauss, nranges, td->gauss_dev, seed);
+		gauss_init(&td->next_file_gauss, nranges, td->gauss_dev, td->random_center, seed);
 		gauss_disable_hash(&td->next_file_gauss);
 	}
 }
